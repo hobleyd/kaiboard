@@ -94,7 +94,7 @@ final class Predictor {
     ///
     /// The word being replaced is deliberately not shown to the model: told
     /// what the wrong word is, it tends to answer with synonyms of it.
-    func fill(before: String, after: String, hints: [String]) async -> [String]? {
+    func fill(before: String, after: String, hints: [String], excluding: [String] = []) async -> [String]? {
         guard isAvailable else { return nil }
         let session = warm ?? makeSession()
         warm = nil
@@ -109,6 +109,9 @@ final class Predictor {
             """
         if !hints.isEmpty {
             prompt += " It may be one of: \(hints.joined(separator: ", "))."
+        }
+        if !excluding.isEmpty {
+            prompt += " Do not give any of these: \(excluding.joined(separator: ", "))."
         }
         let clock = ContinuousClock()
         let start = clock.now

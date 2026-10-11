@@ -13,6 +13,9 @@ final class Suggester {
     private(set) var before: String?
     private(set) var isThinking = false
 
+    /// More than fit in the bar at once; the rest are reached by scrolling it.
+    private static let limit = 8
+
     private var cache: [String: AIHints] = [:]
     private var pending: Task<Void, Never>?
 
@@ -28,7 +31,7 @@ final class Suggester {
         pending = nil
 
         let hints = cache[before]
-        analysis = engine.suggest(before: before, hints: hints)
+        analysis = engine.suggest(before: before, hints: hints, limit: Self.limit)
         isThinking = useAI && hints == nil && predictor.isAvailable && Predictor.worthAsking(analysis)
         onUpdate?()
         guard isThinking else { return }
@@ -44,7 +47,7 @@ final class Suggester {
             if let hints {
                 if self.cache.count > 200 { self.cache.removeAll() }
                 self.cache[before] = hints
-                self.analysis = self.engine.suggest(before: before, hints: hints)
+                self.analysis = self.engine.suggest(before: before, hints: hints, limit: Self.limit)
             }
             self.isThinking = false
             self.onUpdate?()

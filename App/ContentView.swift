@@ -18,7 +18,7 @@ final class Playground {
     }
 
     private func sync() {
-        suggestions = suggester.analysis.suggestions
+        suggestions = Array(suggester.analysis.suggestions.prefix(3))
         thinking = suggester.isThinking
         status = suggester.predictor.statusText
     }

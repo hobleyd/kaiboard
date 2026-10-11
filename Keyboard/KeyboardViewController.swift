@@ -42,7 +42,10 @@ final class KeyboardViewController: UIInputViewController {
         let after: String
         var options: [String] = []
         var isThinking = true
+        /// How many times Review has been used on this selection.
+        var reviews = 0
     }
+    private static let selectionOptions = 12
     private var selection: Selection?
     private var selectionTask: Task<Void, Never>?
     /// How many readings of a swipe Apple Intelligence gets to choose between.
@@ -53,6 +56,9 @@ final class KeyboardViewController: UIInputViewController {
     private var lastKeyWasSpace = false
 
     private static let wordEnders: Set<String> = [".", ",", "!", "?", ";", ":", ")", "\""]
+    /// Punctuation that belongs tight against the word before it. Hyphens,
+    /// opening brackets and quotes legitimately follow a space, so they are left alone.
+    private static let huggers: Set<String> = [".", ",", "!", "?", ";", ":", ")", "]", "}", "%"]
 
     // MARK: Lifecycle
 
@@ -88,6 +94,7 @@ final class KeyboardViewController: UIInputViewController {
             button.addTarget(self, action: #selector(self.handleInputModeList(from:with:)), for: .allTouchEvents)
         }
         bar.onSelect = { [weak self] suggestion in self?.accept(suggestion) }
+        bar.onReview = { [weak self] in self?.reviewSelection() }
         bar.statusText = { [weak self] in self?.suggester.predictor.statusText ?? "" }
         suggester.onUpdate = { [weak self] in self?.render() }
         suggester.engine.load()
@@ -205,14 +212,14 @@ final class KeyboardViewController: UIInputViewController {
         let siblings = (swipeReadings[word.lowercased()] ?? []).filter { $0.lowercased() != word.lowercased() }
         // Words the selection could be a slip for: other readings of the swipe that produced it, then near spellings.
         let near = engine.replacements(for: word, from: siblings + engine.neighbours(of: word, limit: 6), limit: 8)
-        selection = Selection(word: word, before: before, after: after, options: Array(near.prefix(3)), isThinking: predictor.isAvailable)
+        selection = Selection(word: word, before: before, after: after, options: near, isThinking: predictor.isAvailable)
         guard predictor.isAvailable else { return }
 
         selectionTask = Task { [weak self] in
             let filled = await predictor.fill(before: before, after: after, hints: siblings)
             guard !Task.isCancelled, let self, self.selection?.word == word else { return }
             var options = engine.replacements(for: word, from: filled ?? [])
-            self.selection?.options = engine.replacements(for: word, from: options + near)
+            self.selection?.options = engine.replacements(for: word, from: options + near, limit: Self.selectionOptions)
             self.render()
 
             // Give one slot to whichever near-miss fits the sentence best.
@@ -221,7 +228,31 @@ final class KeyboardViewController: UIInputViewController {
             if let pick, !options.prefix(2).contains(pick) {
                 options.insert(pick, at: min(1, options.count))
             }
-            self.selection?.options = engine.replacements(for: word, from: options + near)
+            self.selection?.options = engine.replacements(for: word, from: options + near, limit: Self.selectionOptions)
+            self.selection?.isThinking = false
+            self.render()
+        }
+    }
+
+    /// Asks for further replacements for the selected word, beyond those already offered.
+    private func reviewSelection() {
+        guard let current = selection, !current.isThinking else { return }
+        UIDevice.current.playInputClick()
+        let engine = suggester.engine
+        let predictor = suggester.predictor
+        let round = current.reviews + 1
+        selection?.reviews = round
+        selection?.isThinking = predictor.isAvailable
+        render()
+
+        selectionTask = Task { [weak self] in
+            let fresh = await predictor.fill(
+                before: current.before, after: current.after, hints: [], excluding: current.options + [current.word])
+            guard !Task.isCancelled, let self, self.selection?.word == current.word else { return }
+            // Each round also casts the net for near spellings a little wider.
+            let wider = engine.neighbours(of: current.word, limit: 6 + 4 * round)
+            self.selection?.options = engine.replacements(
+                for: current.word, from: current.options + (fresh ?? []) + wider, limit: Self.selectionOptions * (round + 1))
             self.selection?.isThinking = false
             self.render()
         }
@@ -230,10 +261,10 @@ final class KeyboardViewController: UIInputViewController {
     private func render() {
         let predictor = suggester.predictor
         if let selection {
-            let options = selection.options.prefix(3).map {
+            let options = selection.options.map {
                 Suggestion(text: $0, replace: "", insert: $0, kind: .fix, ai: true, auto: false)
             }
-            bar.show(Array(options), highlightAuto: false, ai: selection.isThinking ? .thinking : .idle)
+            bar.show(options, highlightAuto: false, ai: selection.isThinking ? .thinking : .idle, offersReview: true)
             return
         }
         let ai: SuggestionBar.AIState = !predictor.isAvailable ? .unavailable : suggester.isThinking ? .thinking : .idle
@@ -243,7 +274,7 @@ final class KeyboardViewController: UIInputViewController {
             let others = swiped.alternatives.map {
                 Suggestion(text: $0, replace: swiped.text, insert: $0 + " ", kind: .fix, ai: false, auto: false)
             }
-            suggestions = Array((others.prefix(2) + suggestions.filter { $0.kind != .fix }).prefix(3))
+            suggestions = others + suggestions.filter { $0.kind != .fix }
         }
         bar.show(suggestions, highlightAuto: autocorrects, ai: ai)
     }
@@ -357,12 +388,16 @@ final class KeyboardViewController: UIInputViewController {
         case .character(let raw):
             let text = shift == .off ? raw : raw.uppercased()
             let endsWord = Self.wordEnders.contains(text)
-            if endsWord {
-                if automaticSpace, before.hasSuffix(" ") {
+            let context = before
+            let spaces = context.reversed().prefix { $0 == " " }.count
+            let followsWord = context.dropLast(spaces).last.map { !$0.isWhitespace } ?? false
+            if isProse, Self.huggers.contains(text), spaces > 0, followsWord {
+                // "word ." becomes "word.", however the spaces got there.
+                for _ in 0..<spaces {
                     textDocumentProxy.deleteBackward()
-                } else {
-                    autocorrect()
                 }
+            } else if endsWord {
+                autocorrect()
             }
             textDocumentProxy.insertText(text)
             if endsWord {
