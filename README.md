@@ -61,3 +61,9 @@ number is the workflow run number. The upload needs these repository secrets:
 `core/data/` is derived from Peter Norvig's
 [web n-gram counts](https://norvig.com/ngrams/), filtered through the macOS
 spell checker by `tools/gen_data.swift`.
+
+## Licence
+
+kAIboard is free software, released under the
+[GNU General Public License, version 3](LICENSE). The n-gram counts the word
+data is derived from are published by Peter Norvig under the MIT licence.
