@@ -57,6 +57,13 @@ final class Predictor {
         }
     }
 
+    /// Greedy sampling: the same text should always get the same suggestions.
+    /// Spelled with the older `sampling:` label, which Xcode 27 deprecates,
+    /// because CI builds with the Xcode 26 SDK where the newer one doesn't exist.
+    private static func options(maximumTokens: Int) -> GenerationOptions {
+        GenerationOptions(sampling: .greedy, maximumResponseTokens: maximumTokens)
+    }
+
     // A session accumulates every exchange in its transcript, so each
     // prediction gets a fresh one.
     private func makeSession() -> LanguageModelSession {
@@ -81,7 +88,7 @@ final class Predictor {
     /// Runs a raw prompt, for trying out wording against the model on a device.
     func probe(_ prompt: String) async -> String {
         do {
-            let options = GenerationOptions(samplingMode: .greedy, maximumResponseTokens: 64)
+            let options = Self.options(maximumTokens: 64)
             let response = try await makeSession().respond(to: prompt, generating: WordGuesses.self, options: options)
             return response.content.words.joined(separator: ", ")
         } catch {
@@ -116,7 +123,7 @@ final class Predictor {
         let clock = ContinuousClock()
         let start = clock.now
         do {
-            let options = GenerationOptions(samplingMode: .greedy, maximumResponseTokens: 64)
+            let options = Self.options(maximumTokens: 64)
             let response = try await session.respond(to: prompt, generating: WordGuesses.self, options: options)
             lastLatency = clock.now - start
             lastError = nil
@@ -149,7 +156,7 @@ final class Predictor {
                 let story = context.isEmpty ? "The text is empty so far." : "Text so far: «\(context)»"
                 prompt = "\(story)\nThe next word is one of: \(list). Which one fits the text best?"
             }
-            let options = GenerationOptions(samplingMode: .greedy, maximumResponseTokens: 24)
+            let options = Self.options(maximumTokens: 24)
             let response = try await session.respond(to: prompt, schema: schema, options: options)
             let choice = try response.content.value(String.self)
             lastLatency = clock.now - start
@@ -168,7 +175,7 @@ final class Predictor {
         guard isAvailable else { return nil }
         let session = warm ?? makeSession()
         warm = nil
-        let options = GenerationOptions(samplingMode: .greedy, maximumResponseTokens: 120)
+        let options = Self.options(maximumTokens: 120)
         let clock = ContinuousClock()
         let start = clock.now
 
