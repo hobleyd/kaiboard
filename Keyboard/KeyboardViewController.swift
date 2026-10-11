@@ -1,0 +1,454 @@
+import UIKit
+
+private final class ClickingInputView: UIInputView, UIInputViewAudioFeedback {
+    var enableInputClicksWhenVisible: Bool { true }
+}
+
+final class KeyboardViewController: UIInputViewController {
+    private let suggester = Suggester()
+    private let bar = SuggestionBar()
+    private let keys = KeyboardView()
+    private var heightConstraint: NSLayoutConstraint?
+
+    private var shift = ShiftState.off {
+        didSet { keys.shift = shift }
+    }
+    private var lastShiftTap = Date.distantPast
+
+    /// An auto-correction that the next backspace should take back.
+    private struct Undo {
+        let original: String
+        let corrected: String
+        var trailing = ""
+    }
+    private var undo: Undo?
+    /// The word just entered by swiping, with its trailing space, and the
+    /// decoder's other readings of the same swipe.
+    private struct Swiped {
+        let id = UUID()
+        var text: String
+        var alternatives: [String]
+    }
+    private var swiped: Swiped?
+    private var swipeChoice: Task<Void, Never>?
+    /// Every reading of recent swipes, keyed by each of those readings in
+    /// lowercase, so a wrongly decoded word can be swapped for a sibling later.
+    private var swipeReadings: [String: [String]] = [:]
+
+    /// A single word the user has selected in the document, and what could replace it.
+    private struct Selection {
+        let word: String
+        let before: String
+        let after: String
+        var options: [String] = []
+        var isThinking = true
+    }
+    private var selection: Selection?
+    private var selectionTask: Task<Void, Never>?
+    /// How many readings of a swipe Apple Intelligence gets to choose between.
+    private static let swipeCandidates = 8
+    /// The space before the cursor was added by accepting a suggestion, so
+    /// punctuation typed next should hug the word.
+    private var spaceIsAutomatic = false
+    private var lastKeyWasSpace = false
+
+    private static let wordEnders: Set<String> = [".", ",", "!", "?", ";", ":", ")", "\""]
+
+    // MARK: Lifecycle
+
+    override func viewDidLoad() {
+        super.viewDidLoad()
+        let root = ClickingInputView(frame: .zero, inputViewStyle: .keyboard)
+        root.allowsSelfSizing = true
+        inputView = root
+
+        for subview in [bar, keys] {
+            subview.translatesAutoresizingMaskIntoConstraints = false
+            root.addSubview(subview)
+        }
+        NSLayoutConstraint.activate([
+            bar.topAnchor.constraint(equalTo: root.topAnchor),
+            bar.leadingAnchor.constraint(equalTo: root.leadingAnchor),
+            bar.trailingAnchor.constraint(equalTo: root.trailingAnchor),
+            bar.heightAnchor.constraint(equalToConstant: 44),
+            keys.topAnchor.constraint(equalTo: bar.bottomAnchor),
+            keys.leadingAnchor.constraint(equalTo: root.leadingAnchor),
+            keys.trailingAnchor.constraint(equalTo: root.trailingAnchor),
+            keys.bottomAnchor.constraint(equalTo: root.bottomAnchor, constant: -2),
+        ])
+        let height = root.heightAnchor.constraint(equalToConstant: 262)
+        height.priority = .init(999)
+        height.isActive = true
+        heightConstraint = height
+
+        keys.onKey = { [weak self] key in self?.handle(key) }
+        keys.onSwipe = { [weak self] path in self?.handleSwipe(path) }
+        keys.configureGlobe = { [weak self] button in
+            guard let self else { return }
+            button.addTarget(self, action: #selector(self.handleInputModeList(from:with:)), for: .allTouchEvents)
+        }
+        bar.onSelect = { [weak self] suggestion in self?.accept(suggestion) }
+        bar.statusText = { [weak self] in self?.suggester.predictor.statusText ?? "" }
+        suggester.onUpdate = { [weak self] in self?.render() }
+        suggester.engine.load()
+    }
+
+    override func viewWillAppear(_ animated: Bool) {
+        super.viewWillAppear(animated)
+        suggester.predictor.prewarm()
+        keys.showsGlobe = needsInputModeSwitchKey
+        refresh()
+    }
+
+    override func viewWillDisappear(_ animated: Bool) {
+        super.viewWillDisappear(animated)
+        suggester.engine.save()
+    }
+
+    override func viewWillLayoutSubviews() {
+        super.viewWillLayoutSubviews()
+        let landscape = traitCollection.verticalSizeClass == .compact
+        heightConstraint?.constant = landscape ? 198 : 262
+    }
+
+    override func selectionDidChange(_ textInput: UITextInput?) {
+        super.selectionDidChange(textInput)
+        refresh()
+    }
+
+    override func textDidChange(_ textInput: UITextInput?) {
+        super.textDidChange(textInput)
+        keys.showsGlobe = needsInputModeSwitchKey
+        refresh()
+    }
+
+    // MARK: Field traits
+
+    private var before: String {
+        textDocumentProxy.documentContextBeforeInput ?? ""
+    }
+
+    /// Fields like URLs and e-mail addresses want literal typing.
+    private var isProse: Bool {
+        switch textDocumentProxy.keyboardType ?? .default {
+        case .URL, .emailAddress, .numberPad, .phonePad, .decimalPad, .numbersAndPunctuation, .asciiCapableNumberPad:
+            false
+        default:
+            true
+        }
+    }
+
+    private var autocorrects: Bool {
+        isProse && textDocumentProxy.autocorrectionType != .no
+    }
+
+    private var returnTitle: String {
+        switch textDocumentProxy.returnKeyType ?? .default {
+        case .go: "go"
+        case .search, .google, .yahoo: "search"
+        case .send: "send"
+        case .done: "done"
+        case .next, .continue: "next"
+        case .join: "join"
+        case .route: "route"
+        default: "return"
+        }
+    }
+
+    // MARK: State
+
+    /// Re-reads the document and updates suggestions, and optionally shift.
+    private func refresh(updateShift: Bool = true, useAI: Bool = true) {
+        updateSelection()
+        suggester.update(before: before, useAI: isProse && useAI && selection == nil)
+        keys.returnTitle = returnTitle
+        keys.allowsSwipe = isProse
+        if updateShift, shift != .locked {
+            let analysis = suggester.analysis
+            let capitalise = switch textDocumentProxy.autocapitalizationType ?? .sentences {
+            case .none: false
+            case .allCharacters: true
+            case .words: analysis.current.isEmpty
+            case .sentences: analysis.current.isEmpty && analysis.sentenceStart
+            @unknown default: false
+            }
+            shift = capitalise && isProse ? .on : .off
+        }
+        render()
+    }
+
+    /// The selected word, if exactly one word is selected in a prose field.
+    private var selectedWord: String? {
+        guard isProse, let text = textDocumentProxy.selectedText?.trimmingCharacters(in: .whitespaces),
+              (1...24).contains(text.count), text.contains(where: \.isLetter),
+              text.allSatisfy({ $0.isLetter || $0 == "'" || $0 == "’" || $0 == "-" })
+        else { return nil }
+        return text
+    }
+
+    /// Starts looking for replacements when the user selects a word, using the
+    /// text on both sides of it.
+    private func updateSelection() {
+        guard let word = selectedWord else {
+            selectionTask?.cancel()
+            selection = nil
+            return
+        }
+        let engine = suggester.engine
+        let predictor = suggester.predictor
+        let before = engine.suggest(before: self.before).context
+        let rest = (textDocumentProxy.documentContextAfterInput ?? "").prefix { !$0.isNewline }
+        let after = String(rest.prefix(160)).trimmingCharacters(in: .whitespaces)
+        if let selection, selection.word == word, selection.before == before, selection.after == after { return }
+
+        selectionTask?.cancel()
+        let siblings = (swipeReadings[word.lowercased()] ?? []).filter { $0.lowercased() != word.lowercased() }
+        // Words the selection could be a slip for: other readings of the swipe that produced it, then near spellings.
+        let near = engine.replacements(for: word, from: siblings + engine.neighbours(of: word, limit: 6), limit: 8)
+        selection = Selection(word: word, before: before, after: after, options: Array(near.prefix(3)), isThinking: predictor.isAvailable)
+        guard predictor.isAvailable else { return }
+
+        selectionTask = Task { [weak self] in
+            let filled = await predictor.fill(before: before, after: after, hints: siblings)
+            guard !Task.isCancelled, let self, self.selection?.word == word else { return }
+            var options = engine.replacements(for: word, from: filled ?? [])
+            self.selection?.options = engine.replacements(for: word, from: options + near)
+            self.render()
+
+            // Give one slot to whichever near-miss fits the sentence best.
+            let pick = near.count > 1 ? await predictor.choose(from: near, after: before, before: after) : near.first
+            guard !Task.isCancelled, self.selection?.word == word else { return }
+            if let pick, !options.prefix(2).contains(pick) {
+                options.insert(pick, at: min(1, options.count))
+            }
+            self.selection?.options = engine.replacements(for: word, from: options + near)
+            self.selection?.isThinking = false
+            self.render()
+        }
+    }
+
+    private func render() {
+        let predictor = suggester.predictor
+        if let selection {
+            let options = selection.options.prefix(3).map {
+                Suggestion(text: $0, replace: "", insert: $0, kind: .fix, ai: true, auto: false)
+            }
+            bar.show(Array(options), highlightAuto: false, ai: selection.isThinking ? .thinking : .idle)
+            return
+        }
+        let ai: SuggestionBar.AIState = !predictor.isAvailable ? .unavailable : suggester.isThinking ? .thinking : .idle
+        var suggestions = isProse ? suggester.analysis.suggestions : []
+        if let swiped, before.hasSuffix(swiped.text) {
+            // Lead with the other words the swipe could have meant.
+            let others = swiped.alternatives.map {
+                Suggestion(text: $0, replace: swiped.text, insert: $0 + " ", kind: .fix, ai: false, auto: false)
+            }
+            suggestions = Array((others.prefix(2) + suggestions.filter { $0.kind != .fix }).prefix(3))
+        }
+        bar.show(suggestions, highlightAuto: autocorrects, ai: ai)
+    }
+
+    // MARK: Editing
+
+    private func replace(_ old: String, with new: String) {
+        guard before.hasSuffix(old) else { return }
+        for _ in old {
+            textDocumentProxy.deleteBackward()
+        }
+        if !new.isEmpty {
+            textDocumentProxy.insertText(new)
+        }
+    }
+
+    /// Forgets the pending swipe, recording its word as typed if it is still there.
+    private func settleSwipe() {
+        swipeChoice?.cancel()
+        swipeChoice = nil
+        if let swiped, before.hasSuffix(swiped.text) {
+            suggester.engine.learn(before: before)
+        }
+        swiped = nil
+    }
+
+    private func handleSwipe(_ path: [CGPoint]) {
+        UIDevice.current.playInputClick()
+        undo = nil
+        settleSwipe()
+        lastKeyWasSpace = false
+        let words = suggester.engine.swipe(before: before, path: path, limit: Self.swipeCandidates)
+        guard let best = words.first else { return }
+
+        // A swipe is a whole word: finish whatever was being typed first.
+        if let last = before.last, !last.isWhitespace, !"([{\"'“‘-/".contains(last) {
+            autocorrect()
+            undo = nil
+            textDocumentProxy.insertText(" ")
+        }
+        let cased: (String) -> String = { [shift] word in
+            switch shift {
+            case .off: word
+            case .on: word.prefix(1).uppercased() + word.dropFirst()
+            case .locked: word.uppercased()
+            }
+        }
+        let context = suggester.engine.suggest(before: before).context
+        let text = cased(best) + " "
+        textDocumentProxy.insertText(text)
+        spaceIsAutomatic = true
+        let entry = Swiped(text: text, alternatives: words.dropFirst().map(cased))
+        swiped = entry
+        if swipeReadings.count > 200 { swipeReadings.removeAll() }
+        for word in words {
+            swipeReadings[word.lowercased()] = words
+        }
+
+        // The shape of a swipe often fits several words equally well. Enter
+        // the closest match now, then let Apple Intelligence overrule it from
+        // the meaning of the sentence, unless the user has moved on by then.
+        let predictor = suggester.predictor
+        guard predictor.isAvailable, words.count > 1 else {
+            refresh()
+            return
+        }
+        refresh(useAI: false)
+        swipeChoice = Task { [weak self] in
+            let choice = await predictor.choose(from: words, after: context)
+            guard !Task.isCancelled, let self, var current = self.swiped, current.id == entry.id else { return }
+            if let choice, choice != best, self.before.hasSuffix(current.text) {
+                let chosen = cased(choice) + " "
+                self.replace(current.text, with: chosen)
+                current.alternatives = [cased(best)] + current.alternatives.filter { $0 != cased(choice) }
+                current.text = chosen
+                self.swiped = current
+            }
+            // Next-word suggestions were held back so the two requests didn't compete.
+            self.suggester.invalidate()
+            self.refresh()
+        }
+    }
+
+    /// Swaps the word at the cursor for its auto-correction, if it has one.
+    private func autocorrect() {
+        guard autocorrects else { return }
+        suggester.update(before: before, useAI: false)
+        let analysis = suggester.analysis
+        guard analysis.mode == .complete, let fix = analysis.suggestions.first(where: \.auto) else { return }
+        replace(fix.replace, with: fix.insert)
+        undo = Undo(original: fix.replace, corrected: fix.insert)
+    }
+
+    private func handle(_ key: Key) {
+        UIDevice.current.playInputClick()
+        let pendingUndo = undo
+        let pendingSwipe = swiped
+        if key == .backspace {
+            swipeChoice?.cancel()
+            swiped = nil
+        } else {
+            settleSwipe()
+        }
+        let wasSpace = lastKeyWasSpace
+        let automaticSpace = spaceIsAutomatic
+        undo = nil
+        lastKeyWasSpace = false
+        spaceIsAutomatic = false
+
+        switch key {
+        case .character(let raw):
+            let text = shift == .off ? raw : raw.uppercased()
+            let endsWord = Self.wordEnders.contains(text)
+            if endsWord {
+                if automaticSpace, before.hasSuffix(" ") {
+                    textDocumentProxy.deleteBackward()
+                } else {
+                    autocorrect()
+                }
+            }
+            textDocumentProxy.insertText(text)
+            if endsWord {
+                undo?.trailing = text
+                suggester.engine.learn(before: before)
+            }
+            if text == "'" {
+                keys.page = .letters
+            }
+
+        case .space:
+            let text = before
+            let previous = text.dropLast().last
+            if automaticSpace, text.hasSuffix(" ") {
+                // The space is already there; this press just confirms it.
+                lastKeyWasSpace = true
+            } else if wasSpace, text.hasSuffix(" "), let previous, previous.isLetter || previous.isNumber, isProse {
+                textDocumentProxy.deleteBackward()
+                textDocumentProxy.insertText(". ")
+            } else {
+                autocorrect()
+                textDocumentProxy.insertText(" ")
+                undo?.trailing = " "
+                suggester.engine.learn(before: before)
+                lastKeyWasSpace = true
+            }
+            keys.page = .letters
+
+        case .enter:
+            autocorrect()
+            suggester.engine.learn(before: before)
+            undo = nil
+            textDocumentProxy.insertText("\n")
+
+        case .backspace:
+            if let pendingUndo, before.hasSuffix(pendingUndo.corrected + pendingUndo.trailing) {
+                // Take back the auto-correction and remember the word is intentional.
+                replace(pendingUndo.corrected + pendingUndo.trailing, with: pendingUndo.original + pendingUndo.trailing)
+                suggester.engine.learnWord(pendingUndo.original)
+            } else if let pendingSwipe, before.hasSuffix(pendingSwipe.text) {
+                // One backspace takes back a whole swiped word.
+                replace(pendingSwipe.text, with: "")
+            } else {
+                textDocumentProxy.deleteBackward()
+            }
+
+        case .shift:
+            let now = Date()
+            if shift != .locked, now.timeIntervalSince(lastShiftTap) < 0.35 {
+                shift = .locked
+            } else {
+                shift = shift == .off ? .on : .off
+            }
+            lastShiftTap = now
+            refresh(updateShift: false)
+            return
+
+        case .page(let page):
+            keys.page = page
+            return
+
+        case .globe:
+            return
+        }
+        refresh()
+    }
+
+    private func accept(_ suggestion: Suggestion) {
+        UIDevice.current.playInputClick()
+        undo = nil
+        swipeChoice?.cancel()
+        swiped = nil
+        lastKeyWasSpace = false
+        switch suggestion.kind {
+        case .fix:
+            replace(suggestion.replace, with: suggestion.insert)
+            spaceIsAutomatic = suggestion.insert.hasSuffix(" ")
+        case .verbatim:
+            suggester.engine.learnWord(suggestion.text)
+            textDocumentProxy.insertText(" ")
+            spaceIsAutomatic = true
+        default:
+            replace(suggestion.replace, with: suggestion.insert + " ")
+            spaceIsAutomatic = true
+        }
+        suggester.engine.learn(before: before)
+        refresh()
+    }
+}

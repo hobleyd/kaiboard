@@ -1,0 +1,19 @@
+[package]
+name = "kaiboard-core"
+version = "0.1.0"
+edition = "2021"
+description = "Text engine for the Kaiboard iOS keyboard: context parsing, spelling candidates and suggestion ranking."
+
+[lib]
+name = "kaiboard_core"
+crate-type = ["staticlib", "rlib"]
+
+[profile.release]
+opt-level = 3
+lto = true
+codegen-units = 1
+panic = "abort"
+strip = "debuginfo"
+
+[profile.dev]
+panic = "abort"
