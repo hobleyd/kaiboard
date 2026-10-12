@@ -339,6 +339,11 @@ impl Engine {
     /// most likely spells, best first. `path` is in the units of
     /// `distance::key_center`.
     pub fn swipe(&self, before: &str, path: &[(f32, f32)], limit: usize) -> Vec<String> {
+        self.swipe_scored(before, path, limit).into_iter().map(|(word, _)| word).collect()
+    }
+
+    /// As `swipe`, with each word's score in nats; higher fits better.
+    pub fn swipe_scored(&self, before: &str, path: &[(f32, f32)], limit: usize) -> Vec<(String, f32)> {
         let ctx = context::parse(before);
         // A swipe starts a new word, so whatever is at the cursor precedes it.
         let prev = if ctx.current.is_empty() { ctx.prev_word } else { Some(ctx.current) }.map(normalize);

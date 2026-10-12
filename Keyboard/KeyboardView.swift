@@ -94,7 +94,11 @@ final class KeyboardView: UIView {
     /// A finger was dragged across the letter keys. Points are in key widths
     /// from the left of the top letter row and rows from its top.
     var onSwipe: (([CGPoint]) -> Void)?
+    /// A finger landed on a character key, before it is known whether it will tap or swipe.
+    var onTouchDown: (() -> Void)?
     var allowsSwipe = true
+    /// Why the most recent touch that went wrong did, for the status line.
+    var lastProblem: (text: String, at: Date)?
     /// Lets the controller wire the globe key to the system input-mode picker.
     var configureGlobe: ((UIControl) -> Void)?
 
@@ -119,8 +123,12 @@ final class KeyboardView: UIView {
         let button: KeyButton
         var points: [CGPoint]
         var isSwipe = false
+        /// The longest any of its events waited to be handled, in seconds.
+        var lag: TimeInterval
     }
     private var tracks: [UITouch: Track] = [:]
+    /// A finger is down on a character key.
+    var isTouched: Bool { !tracks.isEmpty }
     private let trail = CAShapeLayer()
     private let margin: CGFloat = 3
 
@@ -181,8 +189,19 @@ final class KeyboardView: UIView {
         }
     }
 
+    private func note(_ problem: String) {
+        lastProblem = (problem, Date())
+    }
+
+    private func lag(of touch: UITouch) -> TimeInterval {
+        ProcessInfo.processInfo.systemUptime - touch.timestamp
+    }
+
     private func rebuild() {
         stopRepeating()
+        if isTouched {
+            note("keys rebuilt under a finger")
+        }
         tracks.removeAll()
         trail.path = nil
         rows.joined().forEach { $0.removeFromSuperview() }
@@ -298,9 +317,15 @@ final class KeyboardView: UIView {
         commitTaps()
         for touch in touches {
             let point = touch.location(in: self)
-            guard let button = characterButton(at: point) else { continue }
+            guard let button = characterButton(at: point) else {
+                note("touch landed on no key")
+                continue
+            }
             button.isHighlighted = true
-            tracks[touch] = Track(button: button, points: [point])
+            tracks[touch] = Track(button: button, points: [point], lag: lag(of: touch))
+        }
+        if isTouched {
+            onTouchDown?()
         }
     }
 
@@ -309,7 +334,10 @@ final class KeyboardView: UIView {
         for touch in touches {
             guard var track = tracks[touch] else { continue }
             let point = touch.location(in: self)
-            track.points.append(point)
+            // Every sample since the last event, so a hitch doesn't flatten the path.
+            let samples = event?.coalescedTouches(for: touch) ?? [touch]
+            track.points += samples.map { $0.location(in: self) }
+            track.lag = max(track.lag, lag(of: touch))
             if !track.isSwipe, allowsSwipe, page == .letters, tracks.count == 1, isLetter(track.button),
                let over = characterButton(at: point), over !== track.button,
                hypot(point.x - track.points[0].x, point.y - track.points[0].y) > unit * 0.7 {
@@ -333,6 +361,10 @@ final class KeyboardView: UIView {
         for touch in touches {
             guard let track = tracks.removeValue(forKey: touch) else { continue }
             track.button.isHighlighted = false
+            let late = max(track.lag, lag(of: touch))
+            if late > 0.1 {
+                note("touch handled \(Int(late * 1000)) ms late")
+            }
             if track.isSwipe {
                 trail.path = nil
                 onSwipe?(track.points.map { CGPoint(x: ($0.x - margin) / unit, y: $0.y / rowHeight) })
@@ -346,6 +378,7 @@ final class KeyboardView: UIView {
         for touch in touches {
             tracks.removeValue(forKey: touch)?.button.isHighlighted = false
         }
+        note("touch cancelled by the system")
         trail.path = nil
     }
 

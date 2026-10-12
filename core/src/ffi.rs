@@ -2,6 +2,7 @@
 
 use crate::engine::{AiHints, Engine, Mode, Output};
 use crate::json;
+use crate::swipe::CONTENDER_MARGIN;
 use std::ffi::{c_char, CStr, CString};
 
 /// # Safety
@@ -84,7 +85,8 @@ pub unsafe extern "C" fn kb_suggest(
 
 /// # Safety
 /// `engine` must be valid; `before` must be null or NUL-terminated UTF-8; `xy`
-/// must point to `points` pairs of floats.
+/// must point to `points` pairs of floats; `contenders` must be null or valid
+/// to write to.
 #[no_mangle]
 pub unsafe extern "C" fn kb_swipe(
     engine: *const Engine,
@@ -92,6 +94,7 @@ pub unsafe extern "C" fn kb_swipe(
     xy: *const f32,
     points: u32,
     limit: u32,
+    contenders: *mut u32,
 ) -> *mut c_char {
     let Some(engine) = engine.as_ref() else { return std::ptr::null_mut() };
     if xy.is_null() {
@@ -101,7 +104,13 @@ pub unsafe extern "C" fn kb_swipe(
     let flat = std::slice::from_raw_parts(xy, points as usize * 2);
     let path: Vec<(f32, f32)> = flat.chunks_exact(2).map(|p| (p[0], p[1])).collect();
 
-    into_c(encode_words(&engine.swipe(&before, &path, limit as usize)))
+    let scored = engine.swipe_scored(&before, &path, limit as usize);
+    if let Some(contenders) = contenders.as_mut() {
+        let best = scored.first().map_or(0.0, |(_, score)| *score);
+        *contenders = scored.iter().take_while(|(_, score)| best - score <= CONTENDER_MARGIN).count() as u32;
+    }
+    let words: Vec<String> = scored.into_iter().map(|(word, _)| word).collect();
+    into_c(encode_words(&words))
 }
 
 fn encode_words(words: &[String]) -> String {

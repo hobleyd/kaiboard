@@ -21,7 +21,7 @@ struct NextGuesses {
 /// or type next, given everything before the cursor.
 @MainActor
 final class Predictor {
-    private static let instructions = """
+    private nonisolated static let instructions = """
         You are the prediction engine inside a phone keyboard. You are shown text a person is in the \
         middle of writing and you predict words for them. Use the meaning of the whole text, not just \
         the last word, and match its language, tone and spelling conventions. Never reply to the text \
@@ -60,20 +60,50 @@ final class Predictor {
     /// Greedy sampling: the same text should always get the same suggestions.
     /// Spelled with the older `sampling:` label, which Xcode 27 deprecates,
     /// because CI builds with the Xcode 26 SDK where the newer one doesn't exist.
-    private static func options(maximumTokens: Int) -> GenerationOptions {
+    private nonisolated static func options(maximumTokens: Int) -> GenerationOptions {
         GenerationOptions(sampling: .greedy, maximumResponseTokens: maximumTokens)
     }
 
     // A session accumulates every exchange in its transcript, so each
     // prediction gets a fresh one.
-    private func makeSession() -> LanguageModelSession {
-        LanguageModelSession(model: model, instructions: Self.instructions)
+    private nonisolated static func makeSession(_ model: SystemLanguageModel) -> LanguageModelSession {
+        LanguageModelSession(model: model, instructions: instructions)
+    }
+
+    /// The prewarmed session, if it hasn't been used yet.
+    private func takeWarm() -> LanguageModelSession? {
+        defer { warm = nil }
+        return warm
+    }
+
+    // Sessions are set up and run off the main actor: whatever the framework
+    // does before it first suspends would otherwise hold up touch handling,
+    // and a finger is usually already tracing the next word by then.
+    @concurrent
+    private nonisolated static func respond<Content: Generable & Sendable>(
+        to prompt: String, generating type: Content.Type, maximumTokens: Int,
+        session: LanguageModelSession?, model: SystemLanguageModel
+    ) async throws -> Content {
+        let session = session ?? makeSession(model)
+        return try await session.respond(to: prompt, generating: type, options: options(maximumTokens: maximumTokens)).content
+    }
+
+    /// Has the model name one of `candidates`.
+    @concurrent
+    private nonisolated static func pick(
+        from candidates: [String], prompt: String, session: LanguageModelSession?, model: SystemLanguageModel
+    ) async throws -> String {
+        // Constraining the answer to the candidates means it can't wander off the list.
+        let schema = try GenerationSchema(root: DynamicGenerationSchema(name: "NextWord", anyOf: candidates), dependencies: [])
+        let session = session ?? makeSession(model)
+        let response = try await session.respond(to: prompt, schema: schema, options: options(maximumTokens: 24))
+        return try response.content.value(String.self)
     }
 
     /// Loads the model ahead of the first keystroke.
     func prewarm() {
         guard isAvailable, warm == nil else { return }
-        let session = makeSession()
+        let session = Self.makeSession(model)
         session.prewarm()
         warm = session
     }
@@ -88,9 +118,8 @@ final class Predictor {
     /// Runs a raw prompt, for trying out wording against the model on a device.
     func probe(_ prompt: String) async -> String {
         do {
-            let options = Self.options(maximumTokens: 64)
-            let response = try await makeSession().respond(to: prompt, generating: WordGuesses.self, options: options)
-            return response.content.words.joined(separator: ", ")
+            let guesses = try await Self.respond(to: prompt, generating: WordGuesses.self, maximumTokens: 64, session: nil, model: model)
+            return guesses.words.joined(separator: ", ")
         } catch {
             return "error: \(error)"
         }
@@ -103,8 +132,7 @@ final class Predictor {
     /// what the wrong word is, it tends to answer with synonyms of it.
     func fill(before: String, after: String, hints: [String], excluding: [String] = []) async -> [String]? {
         guard isAvailable else { return nil }
-        let session = warm ?? makeSession()
-        warm = nil
+        let session = takeWarm()
         // Wording settled by trial on an iPhone: without the worked example
         // the phone's model echoes nouns from the text instead of filling the gap.
         var prompt = """
@@ -123,11 +151,10 @@ final class Predictor {
         let clock = ContinuousClock()
         let start = clock.now
         do {
-            let options = Self.options(maximumTokens: 64)
-            let response = try await session.respond(to: prompt, generating: WordGuesses.self, options: options)
+            let guesses = try await Self.respond(to: prompt, generating: WordGuesses.self, maximumTokens: 64, session: session, model: model)
             lastLatency = clock.now - start
             lastError = nil
-            return response.content.words
+            return guesses.words
         } catch {
             if !(error is CancellationError), !Task.isCancelled {
                 lastError = String(String(describing: error).prefix(120))
@@ -141,13 +168,10 @@ final class Predictor {
     /// cancelled or when the model can't answer.
     func choose(from candidates: [String], after context: String, before following: String? = nil) async -> String? {
         guard isAvailable, candidates.count > 1 else { return nil }
-        let session = warm ?? makeSession()
-        warm = nil
+        let session = takeWarm()
         let clock = ContinuousClock()
         let start = clock.now
         do {
-            // Constraining the answer to the candidates means it can't wander off the list.
-            let schema = try GenerationSchema(root: DynamicGenerationSchema(name: "NextWord", anyOf: candidates), dependencies: [])
             let list = candidates.joined(separator: ", ")
             let prompt: String
             if let following {
@@ -156,9 +180,7 @@ final class Predictor {
                 let story = context.isEmpty ? "The text is empty so far." : "Text so far: «\(context)»"
                 prompt = "\(story)\nThe next word is one of: \(list). Which one fits the text best?"
             }
-            let options = Self.options(maximumTokens: 24)
-            let response = try await session.respond(to: prompt, schema: schema, options: options)
-            let choice = try response.content.value(String.self)
+            let choice = try await Self.pick(from: candidates, prompt: prompt, session: session, model: model)
             lastLatency = clock.now - start
             lastError = nil
             return candidates.contains(choice) ? choice : nil
@@ -173,9 +195,7 @@ final class Predictor {
     /// Returns nil when cancelled or when the model can't answer.
     func hints(for analysis: Analysis) async -> AIHints? {
         guard isAvailable else { return nil }
-        let session = warm ?? makeSession()
-        warm = nil
-        let options = Self.options(maximumTokens: 120)
+        let session = takeWarm()
         let clock = ContinuousClock()
         let start = clock.now
 
@@ -189,24 +209,24 @@ final class Predictor {
                     The letters may be an unfinished word and may contain typos. Give the three words they \
                     most likely intend, judging by the text so far.
                     """
-                let response = try await session.respond(to: prompt, generating: WordGuesses.self, options: options)
-                hints = AIHints(words: response.content.words, fix: nil)
+                let guesses = try await Self.respond(to: prompt, generating: WordGuesses.self, maximumTokens: 120, session: session, model: model)
+                hints = AIHints(words: guesses.words, fix: nil)
             } else if analysis.sentence.isEmpty {
                 let prompt = "Text so far: «\(analysis.context)»\nGive the three words most likely to begin the next sentence."
-                let response = try await session.respond(to: prompt, generating: WordGuesses.self, options: options)
-                hints = AIHints(words: response.content.words, fix: nil)
+                let guesses = try await Self.respond(to: prompt, generating: WordGuesses.self, maximumTokens: 120, session: session, model: model)
+                hints = AIHints(words: guesses.words, fix: nil)
             } else {
                 // The model is far better at continuing and proofreading a
                 // sentence than at naming "the next word", so ask for that and
                 // let the engine pick the words out.
                 let earlier = analysis.context.dropLast(analysis.sentence.count).trimmingCharacters(in: .whitespacesAndNewlines)
                 let prompt = (earlier.isEmpty ? "" : "Earlier text: «\(earlier)»\n") + "Unfinished sentence: «\(analysis.sentence)»"
-                let response = try await session.respond(to: prompt, generating: NextGuesses.self, options: options)
-                var continuation = response.content.continuation.trimmingCharacters(in: CharacterSet(charactersIn: "«» \n"))
+                let guesses = try await Self.respond(to: prompt, generating: NextGuesses.self, maximumTokens: 120, session: session, model: model)
+                var continuation = guesses.continuation.trimmingCharacters(in: CharacterSet(charactersIn: "«» \n"))
                 if continuation.hasPrefix(analysis.sentence) {
                     continuation.removeFirst(analysis.sentence.count)
                 }
-                hints = AIHints(words: [continuation] + response.content.alternatives, fix: response.content.corrected)
+                hints = AIHints(words: [continuation] + guesses.alternatives, fix: guesses.corrected)
             }
             lastLatency = clock.now - start
             lastError = nil

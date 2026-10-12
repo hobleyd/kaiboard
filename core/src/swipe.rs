@@ -22,6 +22,10 @@ const KEY_WEIGHT: f32 = 8.0;
 /// Extra cost per key width that the ends of the swipe miss the word's first
 /// and last letters by; people aim those more carefully than the middle.
 const ENDPOINT_WEIGHT: f32 = 4.0;
+/// How far, in nats, a word may score below the best reading of a swipe and
+/// still be a serious contender for what was meant. "put", "pot" and "pit"
+/// fall within this of each other; "you" and "toy" are several times further apart.
+pub const CONTENDER_MARGIN: f32 = 3.5;
 
 fn distance(a: Point, b: Point) -> f32 {
     (a.0 - b.0).hypot(a.1 - b.1)
@@ -76,12 +80,13 @@ fn ideal(word: &str, keys: &mut Vec<Point>) -> Option<()> {
 }
 
 /// Ranks `lexicon` entries `(lowercase, spelling, log probability)` by how
-/// well they explain `path` and returns the best `limit` spellings.
+/// well they explain `path` and returns the best `limit` spellings with their
+/// scores, in nats.
 pub fn decode<'a>(
     path: &[Point],
     lexicon: impl Iterator<Item = (&'a str, &'a str, f32)>,
     limit: usize,
-) -> Vec<String> {
+) -> Vec<(String, f32)> {
     let (Some(&start), Some(&end)) = (path.first(), path.last()) else { return Vec::new() };
     let traced = resample(path);
     let traced_length = length(path);
@@ -116,13 +121,13 @@ pub fn decode<'a>(
     }
     scored.sort_by(|a, b| b.0.total_cmp(&a.0).then_with(|| a.1.cmp(b.1)));
 
-    let mut out: Vec<String> = Vec::with_capacity(limit);
-    for (_, spelling) in scored {
+    let mut out: Vec<(String, f32)> = Vec::with_capacity(limit);
+    for (score, spelling) in scored {
         if out.len() >= limit {
             break;
         }
-        if !out.iter().any(|seen| seen == spelling) {
-            out.push(spelling.to_string());
+        if !out.iter().any(|(seen, _)| seen == spelling) {
+            out.push((spelling.to_string(), score));
         }
     }
     out
@@ -201,6 +206,21 @@ mod tests {
         assert_eq!(engine.swipe("", &trace("coffee", 0.0), 2), ["code", "coffee"]);
         assert_eq!(engine.swipe("thank ", &trace("you", 0.2), 1), ["you"]);
         assert_eq!(engine.swipe("thank", &trace("you", 0.2), 1), ["you"]);
+    }
+
+    #[test]
+    fn only_look_alikes_are_contenders() {
+        let engine = Engine::new();
+        let contenders = |word: &str| -> Vec<String> {
+            let scored = engine.swipe_scored("", &trace(word, 0.2), 8);
+            let best = scored[0].1;
+            scored.into_iter().filter(|(_, score)| best - score <= CONTENDER_MARGIN).map(|(word, _)| word).collect()
+        };
+        assert_eq!(contenders("you"), ["you"]);
+        let know = contenders("know");
+        assert!(know[0] == "know" && !know.contains(&"knots".to_string()), "{know:?}");
+        let put = contenders("put");
+        assert!(put.contains(&"pot".to_string()) && put.contains(&"pit".to_string()), "{put:?}");
     }
 
     #[test]

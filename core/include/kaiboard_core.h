@@ -23,8 +23,11 @@ char *kb_suggest(const KBEngine *engine, const char *before, const char *ai_word
 // Decodes a finger path swiped across the letter keys into a JSON array of the
 // words it most likely spells, best first. `xy` holds `points` (x, y) pairs: x
 // in key widths from the left edge of the top letter row, y in rows from its
-// top edge. The result must be released with kb_string_free.
-char *kb_swipe(const KBEngine *engine, const char *before, const float *xy, uint32_t points, uint32_t limit);
+// top edge. If `contenders` is not NULL it receives how many of the leading
+// words fit the path nearly as well as the first; the rest are long shots.
+// The result must be released with kb_string_free.
+char *kb_swipe(const KBEngine *engine, const char *before, const float *xy, uint32_t points, uint32_t limit,
+               uint32_t *contenders);
 
 // JSON array of real words a slip of the thumb away from `word`, most common
 // first. Release with kb_string_free.

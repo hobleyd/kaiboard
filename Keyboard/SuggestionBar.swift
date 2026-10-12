@@ -20,6 +20,10 @@ final class SuggestionBar: UIView {
     private var buttons: [UIButton] = []
     private var suggestions: [Suggestion] = []
     private var messageTimer: Timer?
+    /// The latest `show` that arrived while a finger was scrolling the bar.
+    private var deferred: (() -> Void)?
+    private var isPanning = false
+    private var panStart: CGFloat = 0
 
     override init(frame: CGRect) {
         super.init(frame: frame)
@@ -43,7 +47,12 @@ final class SuggestionBar: UIView {
         review.addTarget(self, action: #selector(reviewTapped), for: .touchUpInside)
 
         scroll.showsHorizontalScrollIndicator = false
-        scroll.alwaysBounceHorizontal = false
+        // The bar scrolls itself, from a pan anywhere on it in any direction.
+        // The scroll view's own recogniser has to guess whether a touch is a
+        // tap on a suggestion or a sideways drag, and on a strip this thin it
+        // guessed wrong too often.
+        scroll.isScrollEnabled = false
+        addGestureRecognizer(UIPanGestureRecognizer(target: self, action: #selector(panned(_:))))
         stack.axis = .horizontal
         stack.distribution = .fillEqually
         stack.translatesAutoresizingMaskIntoConstraints = false
@@ -58,6 +67,7 @@ final class SuggestionBar: UIView {
         message.textAlignment = .center
         message.adjustsFontSizeToFitWidth = true
         message.minimumScaleFactor = 0.7
+        message.numberOfLines = 2
         message.isHidden = true
 
         let row = UIStackView(arrangedSubviews: [review, scroll, status])
@@ -75,8 +85,8 @@ final class SuggestionBar: UIView {
         NSLayoutConstraint.activate([
             row.leadingAnchor.constraint(equalTo: leadingAnchor, constant: 6),
             row.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -2),
-            row.topAnchor.constraint(equalTo: topAnchor, constant: 5),
-            row.bottomAnchor.constraint(equalTo: bottomAnchor, constant: -3),
+            row.topAnchor.constraint(equalTo: topAnchor),
+            row.bottomAnchor.constraint(equalTo: bottomAnchor),
             scroll.heightAnchor.constraint(equalTo: row.heightAnchor),
             stack.leadingAnchor.constraint(equalTo: scroll.contentLayoutGuide.leadingAnchor),
             stack.trailingAnchor.constraint(equalTo: scroll.contentLayoutGuide.trailingAnchor),
@@ -102,7 +112,53 @@ final class SuggestionBar: UIView {
         case unavailable, idle, thinking
     }
 
+    @objc private func panned(_ pan: UIPanGestureRecognizer) {
+        let limit = max(0, scroll.contentSize.width - scroll.bounds.width)
+        switch pan.state {
+        case .began:
+            isPanning = true
+            scroll.layer.removeAllAnimations()
+            panStart = scroll.contentOffset.x
+        case .changed:
+            var x = panStart - pan.translation(in: self).x
+            // Past either end the row drags with resistance, which shows the
+            // touch was felt even when there is nothing more to scroll to.
+            if x < 0 {
+                x /= 3
+            } else if x > limit {
+                x = limit + (x - limit) / 3
+            }
+            scroll.contentOffset.x = x
+        case .ended, .cancelled, .failed:
+            // Carry on a little way in the direction of a flick.
+            let coast = pan.state == .ended ? pan.velocity(in: self).x * 0.2 : 0
+            let target = min(max(scroll.contentOffset.x - coast, 0), limit)
+            UIView.animate(withDuration: 0.3, delay: 0, options: [.curveEaseOut, .allowUserInteraction, .beginFromCurrentState]) {
+                self.scroll.contentOffset.x = target
+            }
+            isPanning = false
+            applyDeferred()
+        default:
+            break
+        }
+    }
+
+    private func applyDeferred() {
+        let update = deferred
+        deferred = nil
+        update?()
+    }
+
     func show(_ suggestions: [Suggestion], highlightAuto: Bool, ai: AIState, offersReview: Bool = false) {
+        // Suggestions often change just as a finger starts scrolling the old
+        // ones. Swapping the buttons out from under it would kill the drag.
+        guard !isPanning else {
+            deferred = { [weak self] in
+                self?.show(suggestions, highlightAuto: highlightAuto, ai: ai, offersReview: offersReview)
+            }
+            return
+        }
+        deferred = nil
         // When options are added to the end of the same list, keep the user's
         // place and bring the first new one into view; otherwise start over.
         let previous = self.suggestions
@@ -146,6 +202,7 @@ final class SuggestionBar: UIView {
             if suggestion.auto && highlightAuto {
                 config.background.backgroundColor = .tertiarySystemFill
                 config.background.cornerRadius = 8
+                config.background.backgroundInsets = .init(top: 4, leading: 0, bottom: 4, trailing: 0)
             }
             button.configuration = config
         }

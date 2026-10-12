@@ -24,7 +24,18 @@ final class Suggester {
         before = nil
     }
 
-    func update(before: String, useAI: Bool = true) {
+    /// Abandons the request in flight, if any. The next `update` starts over.
+    func pause() {
+        guard pending != nil else { return }
+        pending?.cancel()
+        pending = nil
+        before = nil
+        isThinking = false
+        onUpdate?()
+    }
+
+    /// `patience` overrides how long to wait for the user to stop before asking Apple Intelligence.
+    func update(before: String, useAI: Bool = true, patience: Duration? = nil) {
         guard before != self.before else { return }
         self.before = before
         pending?.cancel()
@@ -38,7 +49,7 @@ final class Suggester {
 
         let snapshot = analysis
         // Wait for a pause in typing; mid-word keystrokes arrive in bursts.
-        let pause: Duration = snapshot.mode == .next ? .milliseconds(40) : .milliseconds(160)
+        let pause = patience ?? (snapshot.mode == .next ? .milliseconds(40) : .milliseconds(160))
         pending = Task { [weak self] in
             try? await Task.sleep(for: pause)
             guard !Task.isCancelled, let self else { return }
@@ -50,6 +61,7 @@ final class Suggester {
                 self.analysis = self.engine.suggest(before: before, hints: hints, limit: Self.limit)
             }
             self.isThinking = false
+            self.pending = nil
             self.onUpdate?()
         }
     }

@@ -50,6 +50,9 @@ final class KeyboardViewController: UIInputViewController {
     private var selectionTask: Task<Void, Never>?
     /// How many readings of a swipe Apple Intelligence gets to choose between.
     private static let swipeCandidates = 8
+    /// How long after a swipe to wait before asking for next-word suggestions:
+    /// long enough that swiping straight on to the next word gets in first.
+    private static let swipePatience = Duration.milliseconds(350)
     /// The space before the cursor was added by accepting a suggestion, so
     /// punctuation typed next should hug the word.
     private var spaceIsAutomatic = false
@@ -76,7 +79,7 @@ final class KeyboardViewController: UIInputViewController {
             bar.topAnchor.constraint(equalTo: root.topAnchor),
             bar.leadingAnchor.constraint(equalTo: root.leadingAnchor),
             bar.trailingAnchor.constraint(equalTo: root.trailingAnchor),
-            bar.heightAnchor.constraint(equalToConstant: 44),
+            bar.heightAnchor.constraint(equalToConstant: 38),
             keys.topAnchor.constraint(equalTo: bar.bottomAnchor),
             keys.leadingAnchor.constraint(equalTo: root.leadingAnchor),
             keys.trailingAnchor.constraint(equalTo: root.trailingAnchor),
@@ -89,13 +92,23 @@ final class KeyboardViewController: UIInputViewController {
 
         keys.onKey = { [weak self] key in self?.handle(key) }
         keys.onSwipe = { [weak self] path in self?.handleSwipe(path) }
+        // Suggestions for the text as it stood are stale once the next word is
+        // under way, and generating them competes with tracking the finger.
+        keys.onTouchDown = { [weak self] in self?.suggester.pause() }
         keys.configureGlobe = { [weak self] button in
             guard let self else { return }
             button.addTarget(self, action: #selector(self.handleInputModeList(from:with:)), for: .allTouchEvents)
         }
         bar.onSelect = { [weak self] suggestion in self?.accept(suggestion) }
         bar.onReview = { [weak self] in self?.reviewSelection() }
-        bar.statusText = { [weak self] in self?.suggester.predictor.statusText ?? "" }
+        bar.statusText = { [weak self] in
+            guard let self else { return "" }
+            var text = self.suggester.predictor.statusText
+            if let problem = self.keys.lastProblem {
+                text += "\n\(problem.text), \(Int(-problem.at.timeIntervalSinceNow)) s ago"
+            }
+            return text
+        }
         suggester.onUpdate = { [weak self] in self?.render() }
         suggester.engine.load()
     }
@@ -125,7 +138,10 @@ final class KeyboardViewController: UIInputViewController {
 
     override func textDidChange(_ textInput: UITextInput?) {
         super.textDidChange(textInput)
-        keys.showsGlobe = needsInputModeSwitchKey
+        // Changing the bottom row rebuilds the keys, which would drop a swipe in progress.
+        if !keys.isTouched {
+            keys.showsGlobe = needsInputModeSwitchKey
+        }
         refresh()
     }
 
@@ -165,9 +181,9 @@ final class KeyboardViewController: UIInputViewController {
     // MARK: State
 
     /// Re-reads the document and updates suggestions, and optionally shift.
-    private func refresh(updateShift: Bool = true, useAI: Bool = true) {
+    private func refresh(updateShift: Bool = true, useAI: Bool = true, patience: Duration? = nil) {
         updateSelection()
-        suggester.update(before: before, useAI: isProse && useAI && selection == nil)
+        suggester.update(before: before, useAI: isProse && useAI && selection == nil && !keys.isTouched, patience: patience)
         keys.returnTitle = returnTitle
         keys.allowsSwipe = isProse
         if updateShift, shift != .locked {
@@ -306,8 +322,11 @@ final class KeyboardViewController: UIInputViewController {
         undo = nil
         settleSwipe()
         lastKeyWasSpace = false
-        let words = suggester.engine.swipe(before: before, path: path, limit: Self.swipeCandidates)
-        guard let best = words.first else { return }
+        let (words, contenders) = suggester.engine.swipe(before: before, path: path, limit: Self.swipeCandidates)
+        guard let best = words.first else {
+            keys.lastProblem = ("swipe of \(path.count) points matched no word", Date())
+            return
+        }
 
         // A swipe is a whole word: finish whatever was being typed first.
         if let last = before.last, !last.isWhitespace, !"([{\"'“‘-/".contains(last) {
@@ -336,14 +355,17 @@ final class KeyboardViewController: UIInputViewController {
         // The shape of a swipe often fits several words equally well. Enter
         // the closest match now, then let Apple Intelligence overrule it from
         // the meaning of the sentence, unless the user has moved on by then.
+        // It only gets the words the shape can't tell apart: offered the long
+        // shots too, it picks them over a clear winner.
         let predictor = suggester.predictor
-        guard predictor.isAvailable, words.count > 1 else {
-            refresh()
+        let close = Array(words.prefix(contenders))
+        guard predictor.isAvailable, close.count > 1 else {
+            refresh(patience: Self.swipePatience)
             return
         }
         refresh(useAI: false)
         swipeChoice = Task { [weak self] in
-            let choice = await predictor.choose(from: words, after: context)
+            let choice = await predictor.choose(from: close, after: context)
             guard !Task.isCancelled, let self, var current = self.swiped, current.id == entry.id else { return }
             if let choice, choice != best, self.before.hasSuffix(current.text) {
                 let chosen = cased(choice) + " "
@@ -354,7 +376,7 @@ final class KeyboardViewController: UIInputViewController {
             }
             // Next-word suggestions were held back so the two requests didn't compete.
             self.suggester.invalidate()
-            self.refresh()
+            self.refresh(patience: Self.swipePatience)
         }
     }
 
