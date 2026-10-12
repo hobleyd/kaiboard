@@ -8,6 +8,24 @@ final class KeyboardViewController: UIInputViewController {
     private let suggester = Suggester()
     private let bar = SuggestionBar()
     private let keys = KeyboardView()
+    private let catalog = EmojiCatalog()
+    private lazy var emoji = EmojiView(catalog: catalog)
+    private let search = EmojiSearchBar()
+
+    /// What is standing in for the suggestions and the keys.
+    private enum Panel {
+        case typing
+        /// The emoji picker, under a search field.
+        case emoji
+        /// The keys again, typing into the search field.
+        case emojiSearch
+    }
+    private var panel = Panel.typing
+    /// What has been typed into the emoji search field, while it is in use.
+    private var emojiQuery: String?
+    /// The last thing done in the search was to pick an emoji, so backspace
+    /// should take that back rather than eat into the query.
+    private var justPickedEmoji = false
     private var heightConstraint: NSLayoutConstraint?
 
     private var shift = ShiftState.off {
@@ -71,10 +89,12 @@ final class KeyboardViewController: UIInputViewController {
         root.allowsSelfSizing = true
         inputView = root
 
-        for subview in [bar, keys] {
+        for subview in [bar, search, keys, emoji] {
             subview.translatesAutoresizingMaskIntoConstraints = false
             root.addSubview(subview)
         }
+        emoji.isHidden = true
+        search.isHidden = true
         NSLayoutConstraint.activate([
             bar.topAnchor.constraint(equalTo: root.topAnchor),
             bar.leadingAnchor.constraint(equalTo: root.leadingAnchor),
@@ -84,6 +104,14 @@ final class KeyboardViewController: UIInputViewController {
             keys.leadingAnchor.constraint(equalTo: root.leadingAnchor),
             keys.trailingAnchor.constraint(equalTo: root.trailingAnchor),
             keys.bottomAnchor.constraint(equalTo: root.bottomAnchor, constant: -2),
+            search.topAnchor.constraint(equalTo: bar.topAnchor),
+            search.leadingAnchor.constraint(equalTo: bar.leadingAnchor),
+            search.trailingAnchor.constraint(equalTo: bar.trailingAnchor),
+            search.bottomAnchor.constraint(equalTo: bar.bottomAnchor),
+            emoji.topAnchor.constraint(equalTo: keys.topAnchor),
+            emoji.leadingAnchor.constraint(equalTo: keys.leadingAnchor),
+            emoji.trailingAnchor.constraint(equalTo: keys.trailingAnchor),
+            emoji.bottomAnchor.constraint(equalTo: keys.bottomAnchor),
         ])
         let height = root.heightAnchor.constraint(equalToConstant: 262)
         height.priority = .init(999)
@@ -95,6 +123,11 @@ final class KeyboardViewController: UIInputViewController {
         // Suggestions for the text as it stood are stale once the next word is
         // under way, and generating them competes with tracking the finger.
         keys.onTouchDown = { [weak self] in self?.suggester.pause() }
+        emoji.onKey = { [weak self] key in self?.handle(key) }
+        emoji.onEmoji = { [weak self] text in self?.insertEmoji(text) }
+        search.onEmoji = { [weak self] text in self?.insertEmoji(text) }
+        search.onBegin = { [weak self] in self?.show(.emojiSearch) }
+        search.onCancel = { [weak self] in self?.show(.emoji) }
         keys.configureGlobe = { [weak self] button in
             guard let self else { return }
             button.addTarget(self, action: #selector(self.handleInputModeList(from:with:)), for: .allTouchEvents)
@@ -117,6 +150,7 @@ final class KeyboardViewController: UIInputViewController {
         super.viewWillAppear(animated)
         suggester.predictor.prewarm()
         keys.showsGlobe = needsInputModeSwitchKey
+        show(.typing)
         refresh()
     }
 
@@ -185,8 +219,8 @@ final class KeyboardViewController: UIInputViewController {
         updateSelection()
         suggester.update(before: before, useAI: isProse && useAI && selection == nil && !keys.isTouched, patience: patience)
         keys.returnTitle = returnTitle
-        keys.allowsSwipe = isProse
-        if updateShift, shift != .locked {
+        keys.allowsSwipe = isProse && emojiQuery == nil
+        if updateShift, shift != .locked, emojiQuery == nil {
             let analysis = suggester.analysis
             let capitalise = switch textDocumentProxy.autocapitalizationType ?? .sentences {
             case .none: false
@@ -392,6 +426,7 @@ final class KeyboardViewController: UIInputViewController {
 
     private func handle(_ key: Key) {
         UIDevice.current.playInputClick()
+        if typeQuery(key) { return }
         let pendingUndo = undo
         let pendingSwipe = swiped
         if key == .backspace {
@@ -479,11 +514,87 @@ final class KeyboardViewController: UIInputViewController {
 
         case .page(let page):
             keys.page = page
+            if panel == .emoji {
+                show(.typing)
+                refresh()
+            }
+            return
+
+        case .emoji:
+            show(.emoji)
             return
 
         case .globe:
             return
         }
+        refresh()
+    }
+
+    private func show(_ panel: Panel) {
+        guard panel != self.panel else { return }
+        if panel == .emoji {
+            emoji.open()
+        }
+        self.panel = panel
+        emojiQuery = panel == .emojiSearch ? "" : nil
+        justPickedEmoji = false
+        emoji.isHidden = panel != .emoji
+        keys.isHidden = panel == .emoji
+        bar.isHidden = panel != .typing
+        search.isHidden = panel == .typing
+        if panel == .emojiSearch {
+            keys.page = .letters
+            keys.allowsSwipe = false
+            if shift != .locked {
+                shift = .off
+            }
+        }
+        renderSearch()
+    }
+
+    private func renderSearch() {
+        search.show(query: emojiQuery, matches: emojiQuery.map { catalog.search($0) } ?? [])
+    }
+
+    /// While an emoji is being searched for, the keys type the query rather
+    /// than the document. Returns false for keys that keep their usual job.
+    private func typeQuery(_ key: Key) -> Bool {
+        guard var query = emojiQuery else { return false }
+        switch key {
+        case .character(let text):
+            query += text.lowercased()
+        case .space:
+            if !query.isEmpty, !query.hasSuffix(" ") {
+                query += " "
+            }
+        case .backspace:
+            // With nothing typed, or straight after picking an emoji,
+            // backspace edits the document as usual.
+            if query.isEmpty || justPickedEmoji {
+                return false
+            }
+            query.removeLast()
+        case .enter:
+            show(.emoji)
+            return true
+        case .shift, .page, .emoji, .globe:
+            return false
+        }
+        justPickedEmoji = false
+        emojiQuery = query
+        renderSearch()
+        return true
+    }
+
+    private func insertEmoji(_ text: String) {
+        UIDevice.current.playInputClick()
+        settleSwipe()
+        undo = nil
+        lastKeyWasSpace = false
+        spaceIsAutomatic = false
+        catalog.use(text)
+        justPickedEmoji = panel == .emojiSearch
+        textDocumentProxy.insertText(text)
         refresh()
     }
 

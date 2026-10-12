@@ -10,7 +10,7 @@ enum ShiftState {
 
 enum Key: Equatable {
     case character(String)
-    case shift, backspace, space, enter, globe
+    case shift, backspace, space, enter, globe, emoji
     case page(Page)
 }
 
@@ -155,14 +155,20 @@ final class KeyboardView: UIView {
 
     private func makeRows() -> [[KeyButton]] {
         let punctuation = Self.characters(".,?!'", units: 1.4)
-        var bottom: [KeyButton] = []
         let other: Page = page == .letters ? .numbers : .letters
+        var bottom = [KeyButton(.page(other), units: showsGlobe ? 1.25 : 1.5)]
         if showsGlobe {
-            bottom = [KeyButton(.page(other), units: 1.25), KeyButton(.globe, units: 1.25)]
-        } else {
-            bottom = [KeyButton(.page(other), units: 2.5)]
+            bottom.append(KeyButton(.globe))
         }
-        bottom += [KeyButton(.space, units: 5), KeyButton(.enter, units: 2.5)]
+        bottom.append(KeyButton(.emoji, units: showsGlobe ? 1 : 1.25))
+        let space = 8 - bottom.reduce(0) { $0 + $1.units }
+        if page == .letters {
+            // The two marks prose needs most, without a trip to the numbers page.
+            bottom += [KeyButton(.character(",")), KeyButton(.space, units: space - 2), KeyButton(.character("."))]
+        } else {
+            bottom.append(KeyButton(.space, units: space))
+        }
+        bottom.append(KeyButton(.enter, units: 2))
 
         switch page {
         case .letters:
@@ -217,7 +223,7 @@ final class KeyboardView: UIView {
             case .backspace:
                 button.addTarget(self, action: #selector(backspaceDown(_:)), for: .touchDown)
                 button.addTarget(self, action: #selector(stopRepeating), for: [.touchUpInside, .touchUpOutside, .touchCancel, .touchDragExit])
-            case .enter, .page:
+            case .enter, .page, .emoji:
                 button.addTarget(self, action: #selector(pressed(_:)), for: .touchUpInside)
             case .globe:
                 configureGlobe?(button)
@@ -246,6 +252,8 @@ final class KeyboardView: UIView {
                 button.icon.image = UIImage(systemName: "delete.left")
             case .globe:
                 button.icon.image = UIImage(systemName: "globe")
+            case .emoji:
+                button.icon.image = UIImage(systemName: "face.smiling")
             case .space:
                 button.label.text = "space"
             case .enter:

@@ -9,6 +9,9 @@ last few letters.
   local dictionary so there is always something to tap.
 - **Swipe typing.** Drag across the letters; the closest word is entered at
   once and swapped if the model thinks another reading fits the sentence better.
+- **Emoji.** The smiley key opens a picker with every emoji in its default skin
+  tone, grouped, with the ones you used lately first. Tap the search field
+  above it to find one by name.
 - **Fix a word after the fact.** Select a word and the bar offers replacements
   chosen from the text on both sides of it. *Review* asks for more.
 - **Private.** Nothing leaves the phone and the keyboard does not ask for Full

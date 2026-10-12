@@ -882,6 +882,25 @@ mod tests {
     }
 
     #[test]
+    fn copes_with_emoji() {
+        let mut engine = Engine::new();
+        let path = [(0.5, 0.5), (3.0, 0.6), (5.5, 1.5)];
+        for text in [
+            "😀", "hi 😀", "hi 😀 ", "😀hello", "hello😀", "hel😀lo", "👨‍👩‍👧", "🇦🇺", "1️⃣", "☺️", "☺️ thnks", "teh 🇦🇺",
+            "I like 🍕. ", "😀 Teh",
+        ] {
+            engine.suggest(text, None, 8);
+            engine.suggest(text, Some(&hints(&["😀", "hello"], Some(text))), 8);
+            engine.swipe(text, &path, 8);
+            engine.neighbours(text, 6);
+            engine.replacements(text, &[text, "hello"], 8);
+            engine.learn(text);
+            engine.learn_word(text);
+        }
+        engine.import(&engine.export());
+    }
+
+    #[test]
     fn learns_new_words() {
         let mut e = Engine::new();
         assert_eq!(e.suggest("try kaiboard", None, 3).suggestions[0].kind, Kind::Verbatim);
