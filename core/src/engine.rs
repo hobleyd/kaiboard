@@ -31,7 +31,9 @@ const CONFUSABLES: &[&[&str]] = &[
     &["quite", "quiet"], &["passed", "past"], &["bought", "brought"], &["by", "buy", "bye"],
 ];
 
-/// Valid words the keyboard accepts but never volunteers.
+/// Words the keyboard offers only on evidence that they are meant: they can be
+/// swiped, completed and offered as corrections like any other, but are never
+/// predicted as the next word or auto-corrected to.
 const NO_SUGGEST: &[&str] = &[
     "sex", "sexy", "sexual", "porn", "porno", "fuck", "fucking", "fucked", "shit", "nude", "pussy",
     "anal", "cock", "dick", "cum", "tits", "boobs", "ass", "bitch", "slut", "whore", "xxx",
@@ -357,9 +359,20 @@ impl Engine {
             .map(|(lower, word)| (lower.as_str(), word.spelling.as_str(), -11.0 + (word.count as f32).ln()));
         let lexicon = builtin
             .chain(learned)
-            .filter(|&(lower, _, _)| !blocked(lower))
             .map(|(lower, word, logp)| (lower, word, logp + boosts.get(lower).copied().unwrap_or(0.0)));
-        crate::swipe::decode(path, lexicon, limit)
+        let mut scored = crate::swipe::decode(path, lexicon, limit);
+        // A swipe that reads best as one of these was meant. As a runner-up
+        // it stays on offer, but out of contention, so that second thoughts
+        // about "duck" never land on it.
+        if let Some(best) = scored.first().map(|(_, score)| *score) {
+            for (word, score) in scored.iter_mut().skip(1) {
+                if blocked(&normalize(word)) {
+                    *score = score.min(best - crate::swipe::CONTENDER_MARGIN - 0.1);
+                }
+            }
+            scored.sort_by(|a, b| b.1.total_cmp(&a.1));
+        }
+        scored
     }
 
     /// Real words a slip of the thumb away from `word`, most common first.
@@ -374,7 +387,7 @@ impl Engine {
             .dict
             .entries
             .iter()
-            .filter(|e| e.lower != lower && e.lower.len().abs_diff(bytes.len()) <= 2 && !blocked(e.lower))
+            .filter(|e| e.lower != lower && e.lower.len().abs_diff(bytes.len()) <= 2)
             .filter(|e| plausible_start(bytes, e.lower.as_bytes()))
             .filter_map(|e| Some((e.logp - TYPO_WEIGHT * typo_cost(bytes, e.lower.as_bytes(), max)?, e.word)))
             .collect();
@@ -431,7 +444,7 @@ impl Engine {
 
         let mut best_completion = f32::NEG_INFINITY;
         for entry in self.dict.with_prefix(&lower) {
-            if entry.lower.len() == lower.len() || blocked(entry.lower) {
+            if entry.lower.len() == lower.len() {
                 continue;
             }
             let extra = (entry.lower.len() - lower.len()).min(6) as f32;
@@ -462,7 +475,7 @@ impl Engine {
             let max = max_cost(bytes.len());
             for entry in &self.dict.entries {
                 let word = entry.lower.as_bytes();
-                if word.len().abs_diff(bytes.len()) > 2 || !plausible_start(bytes, word) || blocked(entry.lower) {
+                if word.len().abs_diff(bytes.len()) > 2 || !plausible_start(bytes, word) {
                     continue;
                 }
                 let Some(cost) = typo_cost(bytes, word, max) else { continue };
@@ -475,6 +488,7 @@ impl Engine {
                     // Don't respell into an obscure word when what was typed
                     // is the start of a far more common one.
                     auto: (entry.logp > AUTOCORRECT_MIN_LOGP
+                        && !blocked(entry.lower)
                         && (entry.lower.starts_with(&*lower) || score > best_completion - AUTOCORRECT_MARGIN))
                         .then_some(score),
                 });
@@ -879,6 +893,20 @@ mod tests {
         let ai = hints(&["we", "The", "it\\'s"], None);
         assert_eq!(texts(&e.suggest("All done. ", Some(&ai), 3)), ["We", "The", "It's"]);
         assert_eq!(texts(&e.suggest("and then ", Some(&ai), 3)), ["we", "the", "it's"]);
+    }
+
+    #[test]
+    fn adult_words_are_offered_but_not_volunteered() {
+        let engine = Engine::new();
+        assert!(texts(&engine.suggest("what the fuc", None, 8)).contains(&"fuck"));
+        // A typo for one is offered as a fix, but not applied unasked.
+        let out = engine.suggest("oh shti", None, 8);
+        assert!(texts(&out).contains(&"shit"), "{:?}", texts(&out));
+        assert_ne!(auto(&out), Some("shit"));
+        for before in ["what the ", "holy ", "you "] {
+            let next = engine.suggest(before, None, 8);
+            assert!(!texts(&next).iter().any(|word| blocked(&word.to_lowercase())), "{:?}", texts(&next));
+        }
     }
 
     #[test]

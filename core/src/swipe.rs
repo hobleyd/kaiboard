@@ -224,6 +224,20 @@ mod tests {
     }
 
     #[test]
+    fn adult_words_can_be_swiped() {
+        let engine = Engine::new();
+        for word in ["fuck", "shit", "cock", "pussy"] {
+            let got = engine.swipe("", &trace(word, 0.2), 4);
+            assert!(got.contains(&word.to_string()), "{word}: {got:?}");
+        }
+        // Next to an innocent word they are offered but are not contenders.
+        let scored = engine.swipe_scored("", &trace("duck", 0.2), 4);
+        assert_eq!(scored[0].0, "duck");
+        let rude = scored.iter().find(|(word, _)| word == "fuck").expect("still offered");
+        assert!(scored[0].1 - rude.1 > CONTENDER_MARGIN, "{scored:?}");
+    }
+
+    #[test]
     fn nonsense_paths_decode_to_nothing_much() {
         let engine = Engine::new();
         assert!(engine.swipe("", &[], 3).is_empty());
