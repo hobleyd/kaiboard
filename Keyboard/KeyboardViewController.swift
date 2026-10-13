@@ -308,10 +308,20 @@ final class KeyboardViewController: UIInputViewController {
         }
     }
 
+    /// `word` capitalised as the shift key asks.
+    private static func cased(_ word: String, for shift: ShiftState) -> String {
+        switch shift {
+        case .off: word
+        case .on: word.prefix(1).uppercased() + word.dropFirst()
+        case .locked: word.uppercased()
+        }
+    }
+
     private func render() {
         let predictor = suggester.predictor
         if let selection {
-            let options = selection.options.map {
+            // Shift is up where the selection starts a sentence.
+            let options = selection.options.map { Self.cased($0, for: shift) }.map {
                 Suggestion(text: $0, replace: "", insert: $0, kind: .fix, ai: true, auto: false)
             }
             bar.show(options, highlightAuto: false, ai: selection.isThinking ? .thinking : .idle, offersReview: true)
@@ -368,13 +378,7 @@ final class KeyboardViewController: UIInputViewController {
             undo = nil
             textDocumentProxy.insertText(" ")
         }
-        let cased: (String) -> String = { [shift] word in
-            switch shift {
-            case .off: word
-            case .on: word.prefix(1).uppercased() + word.dropFirst()
-            case .locked: word.uppercased()
-            }
-        }
+        let cased: (String) -> String = { [shift] word in Self.cased(word, for: shift) }
         let context = suggester.engine.suggest(before: before).context
         let text = cased(best) + " "
         textDocumentProxy.insertText(text)

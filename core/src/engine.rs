@@ -392,12 +392,21 @@ impl Engine {
             .filter_map(|e| Some((e.logp - TYPO_WEIGHT * typo_cost(bytes, e.lower.as_bytes(), max)?, e.word)))
             .collect();
         near.sort_by(|a, b| b.0.total_cmp(&a.0).then_with(|| a.1.cmp(b.1)));
-        near.into_iter().take(limit).map(|(_, spelling)| apply_case(word, spelling)).collect()
+        let case = self.chosen_case(word);
+        near.into_iter().take(limit).map(|(_, spelling)| apply_case(&case, spelling)).collect()
+    }
+
+    /// `word` as far as its capitals were chosen rather than part of its
+    /// spelling: a name's capital says nothing about the word it was mistaken for.
+    fn chosen_case(&self, word: &str) -> String {
+        let lower = normalize(word);
+        if self.spelling(&lower) == word { lower } else { word.to_string() }
     }
 
     /// Tidies words proposed as replacements for `selected`: one plain word
     /// each, no repeats, not `selected` itself, capitalised like it.
     pub fn replacements(&self, selected: &str, proposed: &[&str], limit: usize) -> Vec<String> {
+        let case = self.chosen_case(selected);
         let mut seen = vec![normalize(selected)];
         let mut out = Vec::new();
         for word in proposed.iter().filter_map(|raw| clean(raw)) {
@@ -406,7 +415,7 @@ impl Engine {
                 continue;
             }
             let spelling = self.dict.lookup(&lower).map_or(word, |e| e.word.to_string());
-            out.push(apply_case(selected, &spelling));
+            out.push(apply_case(&case, &spelling));
             seen.push(lower);
         }
         out
@@ -952,6 +961,9 @@ mod tests {
         assert!(e.neighbours("xqzvkj", 6).is_empty());
         let got = e.replacements("Series", &["words", "series", "the word", "Words.", "it\\'s", "42"], 3);
         assert_eq!(got, ["Words", "The", "It's"]);
+        // A name's capital is its own, not the sentence's.
+        assert_eq!(e.replacements("Di", &["do", "London"], 3), ["do", "London"]);
+        assert!(e.neighbours("Di", 6).contains(&"do".to_string()), "{:?}", e.neighbours("Di", 6));
     }
 
     #[test]
