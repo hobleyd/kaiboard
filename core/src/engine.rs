@@ -19,6 +19,13 @@ const FIXUPS: &[(&str, &str)] = &[
     ("shouldve", "should've"), ("aint", "ain't"), ("yall", "y'all"), ("oclock", "o'clock"),
 ];
 
+/// Contractions that, without their apostrophe, are other words. A swipe
+/// can't tell them apart, so the contraction is offered alongside.
+const APOSTROPHE_LESS: &[(&str, &str)] = &[
+    ("its", "it's"), ("well", "we'll"), ("were", "we're"), ("ill", "I'll"), ("id", "I'd"), ("hell", "he'll"),
+    ("shell", "she'll"), ("wed", "we'd"), ("shed", "she'd"), ("lets", "let's"),
+];
+
 const CONTRACTION_SUFFIXES: &[&str] = &["s", "re", "ve", "ll", "d", "m", "t"];
 
 /// Real words that get swapped for one another. The model may propose
@@ -357,10 +364,29 @@ impl Engine {
             .iter()
             .filter(|(_, word)| word.count >= LEARNED_AFTER)
             .map(|(lower, word)| (lower.as_str(), word.spelling.as_str(), -11.0 + (word.count as f32).ln()));
+        // The word list has few contractions; give the rest the frequency of "I'm", which it has.
+        let common = self.dict.lookup("im").map_or(-12.0, |e| e.logp);
+        let contractions = FIXUPS.iter().filter(|(bare, _)| !self.dict.contains(bare)).map(move |&(bare, full)| (bare, full, common));
         let lexicon = builtin
             .chain(learned)
+            .chain(contractions)
             .map(|(lower, word, logp)| (lower, word, logp + boosts.get(lower).copied().unwrap_or(0.0)));
         let mut scored = crate::swipe::decode(path, lexicon, limit);
+        // The letter keys have no apostrophe, so contractions are swiped without one.
+        let mut extra = Vec::new();
+        for (word, score) in &mut scored {
+            let lower = normalize(word);
+            if let Some(full) = fixup(&lower) {
+                *word = full.to_string();
+            } else if let Some(&(_, full)) = APOSTROPHE_LESS.iter().find(|(bare, _)| *bare == lower) {
+                extra.push((full.to_string(), *score - crate::swipe::CONTENDER_MARGIN - 0.1));
+            }
+        }
+        for (word, score) in extra {
+            if !scored.iter().any(|(seen, _)| normalize(seen) == normalize(&word)) {
+                scored.push((word, score));
+            }
+        }
         // A swipe that reads best as one of these was meant. As a runner-up
         // it stays on offer, but out of contention, so that second thoughts
         // about "duck" never land on it.
@@ -370,8 +396,9 @@ impl Engine {
                     *score = score.min(best - crate::swipe::CONTENDER_MARGIN - 0.1);
                 }
             }
-            scored.sort_by(|a, b| b.1.total_cmp(&a.1));
         }
+        scored.sort_by(|a, b| b.1.total_cmp(&a.1));
+        scored.truncate(limit);
         scored
     }
 

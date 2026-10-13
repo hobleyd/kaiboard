@@ -267,6 +267,22 @@ mod tests {
         assert!(scored[0].1 - rude.1 > CONTENDER_MARGIN, "{scored:?}");
     }
 
+    #[test]
+    fn swiped_contractions_get_their_apostrophe() {
+        let engine = Engine::new();
+        assert_eq!(engine.swipe("", &trace("im", 0.0), 1), ["I'm"]);
+        for (bare, full) in [("dont", "don't"), ("didnt", "didn't"), ("youre", "you're"), ("thats", "that's")] {
+            assert_eq!(engine.swipe("", &trace(bare, 0.2), 1), [full]);
+        }
+        // Their look-alikes still win when they are what was swiped.
+        assert_eq!(engine.swipe("", &trace("your", 0.2), 1), ["your"]);
+        assert_eq!(engine.swipe("", &trace("doing", 0.2), 1), ["doing"]);
+        // Where the bare letters are a word too, the contraction is offered but not entered.
+        let got = engine.swipe("", &trace("were", 0.2), 8);
+        assert_eq!(got[0], "were");
+        assert!(got.contains(&"we're".to_string()), "{got:?}");
+    }
+
     /// Swipes recorded on a phone, one per line: the word meant, then the
     /// path as `x,y` points separated by semicolons.
     fn recorded() -> Vec<(&'static str, Vec<Point>)> {
