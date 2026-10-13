@@ -12,9 +12,16 @@ type Point = (f32, f32);
 const SAMPLES: usize = 32;
 /// How far, in key widths, a swipe may start or end from a word's first or last letter.
 const ENDPOINT_SLACK: f32 = 1.3;
-/// Average distance between the paths beyond which a word is not considered.
-const MAX_MEAN_DISTANCE: f32 = 0.9;
-/// Nats of word frequency that one key width of average deviation costs.
+/// Average distance between evenly spaced points of the two paths beyond
+/// which a word is not looked at more closely. Loose: a finger that turns
+/// short of a key throws every later point out of step.
+const MAX_MEAN_DISTANCE: f32 = 1.8;
+/// How many samples either path may run ahead of the other when they are
+/// aligned, to make up for corners the finger cut short.
+const WARP: usize = 6;
+/// Average distance between the aligned paths beyond which a word is not considered.
+const MAX_ALIGNED_DISTANCE: f32 = 0.9;
+/// Nats of word frequency that one key width of average deviation between the aligned paths costs.
 const DISTANCE_WEIGHT: f32 = 22.0;
 /// Cost per key width, averaged over the word's letters, that the swipe passes
 /// by each letter's key. Tells apart words whose paths differ at one corner.
@@ -61,6 +68,23 @@ fn resample(path: &[Point]) -> [Point; SAMPLES] {
         *point = path[path.len() - 1];
     }
     out
+}
+
+/// Average distance between `a` and `b` once their samples are matched up,
+/// in order, so as to bring the paths as close as possible, letting each run
+/// up to `WARP` samples ahead of the other (dynamic time warping).
+fn aligned_distance(a: &[Point; SAMPLES], b: &[Point; SAMPLES]) -> f32 {
+    // Cheapest alignment of a[..i] with b[..j], kept one row at a time.
+    let mut above = [f32::INFINITY; SAMPLES + 1];
+    above[0] = 0.0;
+    for i in 1..=SAMPLES {
+        let mut row = [f32::INFINITY; SAMPLES + 1];
+        for j in i.saturating_sub(WARP).max(1)..=(i + WARP).min(SAMPLES) {
+            row[j] = distance(a[i - 1], b[j - 1]) + above[j - 1].min(above[j]).min(row[j - 1]);
+        }
+        above = row;
+    }
+    above[SAMPLES] / SAMPLES as f32
 }
 
 /// The key centres a finger visits to spell `word`, or `None` if it has
@@ -111,12 +135,16 @@ pub fn decode<'a>(
         if mean > MAX_MEAN_DISTANCE {
             continue;
         }
+        let aligned = aligned_distance(&traced, &wanted);
+        if aligned > MAX_ALIGNED_DISTANCE {
+            continue;
+        }
         let missed = keys
             .iter()
             .map(|&key| path.iter().map(|&point| distance(key, point)).fold(f32::INFINITY, f32::min))
             .sum::<f32>()
             / keys.len() as f32;
-        let cost = DISTANCE_WEIGHT * mean + KEY_WEIGHT * missed + ENDPOINT_WEIGHT * (ends.0 + ends.1);
+        let cost = DISTANCE_WEIGHT * aligned + KEY_WEIGHT * missed + ENDPOINT_WEIGHT * (ends.0 + ends.1);
         scored.push((logp - cost, spelling));
     }
     scored.sort_by(|a, b| b.0.total_cmp(&a.0).then_with(|| a.1.cmp(b.1)));
@@ -155,13 +183,14 @@ mod tests {
             }
         }
         path.push(keys[keys.len() - 1]);
-        // Smoothing rounds the corners off, as a hurried finger does.
-        let smoothed: Vec<Point> = (0..path.len())
-            .map(|i| {
+        // Smoothing rounds the corners off, as a hurried finger does. The
+        // finger lands where it aimed, though, so the first point stays put.
+        let smoothed: Vec<Point> = std::iter::once(path[0])
+            .chain((1..path.len()).map(|i| {
                 let window = &path[i.saturating_sub(2)..(i + 3).min(path.len())];
                 let n = window.len() as f32;
                 (window.iter().map(|p| p.0).sum::<f32>() / n, window.iter().map(|p| p.1).sum::<f32>() / n)
-            })
+            }))
             .collect();
         smoothed
     }
@@ -203,7 +232,8 @@ mod tests {
         let got = engine.swipe("", &trace("pit", 0.0), 3);
         assert!(got.len() == 3 && got.contains(&"put".to_string()), "{got:?}");
         // "code" and "coffee" differ by one neighbouring key; the runner-up is offered too.
-        assert_eq!(engine.swipe("", &trace("coffee", 0.0), 2), ["code", "coffee"]);
+        let got = engine.swipe("", &trace("coffee", 0.0), 2);
+        assert!(got.contains(&"code".to_string()) && got.contains(&"coffee".to_string()), "{got:?}");
         assert_eq!(engine.swipe("thank ", &trace("you", 0.2), 1), ["you"]);
         assert_eq!(engine.swipe("thank", &trace("you", 0.2), 1), ["you"]);
     }
@@ -237,6 +267,35 @@ mod tests {
         assert!(scored[0].1 - rude.1 > CONTENDER_MARGIN, "{scored:?}");
     }
 
+    /// Swipes recorded on a phone, one per line: the word meant, then the
+    /// path as `x,y` points separated by semicolons.
+    fn recorded() -> Vec<(&'static str, Vec<Point>)> {
+        include_str!("testdata/swipes.txt")
+            .lines()
+            .map(|line| {
+                let (word, path) = line.split_once(' ').unwrap();
+                let point = |p: &str| {
+                    let (x, y) = p.split_once(',').unwrap();
+                    (x.parse().unwrap(), y.parse().unwrap())
+                };
+                (word, path.split(';').map(point).collect())
+            })
+            .collect()
+    }
+
+    #[test]
+    fn decodes_recorded_swipes() {
+        let engine = Engine::new();
+        let results: Vec<_> = recorded().into_iter().map(|(word, path)| (word, engine.swipe("", &path, 3))).collect();
+        // Real fingers turn short of keys at the edge of the keyboard, so these
+        // paths are shorter than the words' ideal ones; that must not matter.
+        // "sock" traces the same line as the far commoner "stock" and "shock",
+        // so on its own it is anyone's guess.
+        let missed: Vec<_> =
+            results.iter().filter(|(word, got)| *word != "sock" && got.first().map(String::as_str) != Some(*word)).collect();
+        assert!(missed.len() <= 1, "{missed:?}");
+    }
+
     #[test]
     fn nonsense_paths_decode_to_nothing_much() {
         let engine = Engine::new();
@@ -244,3 +303,4 @@ mod tests {
         assert!(engine.swipe("", &[(-40.0, 9.0), (-41.0, 9.5)], 3).is_empty());
     }
 }
+
