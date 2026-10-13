@@ -24,9 +24,14 @@ final class SuggestionBar: UIView {
     private var deferred: (() -> Void)?
     private var isPanning = false
     private var panStart: CGFloat = 0
+    /// Lights up at whichever end the row is dragged past.
+    private let edge = UIView()
+    private lazy var edgeAtStart = edge.centerXAnchor.constraint(equalTo: scroll.leadingAnchor, constant: 2)
+    private lazy var edgeAtEnd = edge.centerXAnchor.constraint(equalTo: scroll.trailingAnchor, constant: -2)
 
     override init(frame: CGRect) {
         super.init(frame: frame)
+        backgroundColor = .touchable
 
         var reviewConfig = UIButton.Configuration.tinted()
         reviewConfig.title = "Review"
@@ -70,11 +75,16 @@ final class SuggestionBar: UIView {
         message.numberOfLines = 2
         message.isHidden = true
 
+        edge.backgroundColor = .tintColor
+        edge.layer.cornerRadius = 2
+        edge.alpha = 0
+        edge.isUserInteractionEnabled = false
+
         let row = UIStackView(arrangedSubviews: [review, scroll, status])
         row.axis = .horizontal
         row.alignment = .center
         row.spacing = 4
-        for view in [row, message] {
+        for view in [row, message, edge] {
             view.translatesAutoresizingMaskIntoConstraints = false
             addSubview(view)
         }
@@ -98,6 +108,10 @@ final class SuggestionBar: UIView {
             message.leadingAnchor.constraint(equalTo: scroll.leadingAnchor),
             message.trailingAnchor.constraint(equalTo: scroll.trailingAnchor),
             message.centerYAnchor.constraint(equalTo: row.centerYAnchor),
+            edge.widthAnchor.constraint(equalToConstant: 4),
+            edge.heightAnchor.constraint(equalTo: scroll.heightAnchor, multiplier: 0.6),
+            edge.centerYAnchor.constraint(equalTo: scroll.centerYAnchor),
+            edgeAtStart,
             status.widthAnchor.constraint(equalToConstant: 30),
             status.heightAnchor.constraint(equalTo: row.heightAnchor),
         ])
@@ -121,26 +135,48 @@ final class SuggestionBar: UIView {
             panStart = scroll.contentOffset.x
         case .changed:
             var x = panStart - pan.translation(in: self).x
-            // Past either end the row drags with resistance, which shows the
-            // touch was felt even when there is nothing more to scroll to.
+            // Past either end the row drags with resistance and that end
+            // lights up, which shows the touch was felt even when there is
+            // nothing more to scroll to.
             if x < 0 {
-                x /= 3
+                x /= 2
             } else if x > limit {
-                x = limit + (x - limit) / 3
+                x = limit + (x - limit) / 2
             }
             scroll.contentOffset.x = x
+            showEdge(overscroll: x < 0 ? x : max(0, x - limit))
         case .ended, .cancelled, .failed:
             // Carry on a little way in the direction of a flick.
             let coast = pan.state == .ended ? pan.velocity(in: self).x * 0.2 : 0
             let target = min(max(scroll.contentOffset.x - coast, 0), limit)
-            UIView.animate(withDuration: 0.3, delay: 0, options: [.curveEaseOut, .allowUserInteraction, .beginFromCurrentState]) {
+            let overscrolled = scroll.contentOffset.x < 0 || scroll.contentOffset.x > limit
+            // Spring back from past an end, so the bounce is easy to see.
+            UIView.animate(
+                withDuration: overscrolled ? 0.5 : 0.3, delay: 0, usingSpringWithDamping: overscrolled ? 0.6 : 1,
+                initialSpringVelocity: 0, options: [.allowUserInteraction, .beginFromCurrentState]
+            ) {
                 self.scroll.contentOffset.x = target
+            }
+            UIView.animate(withDuration: 0.4, delay: 0.1, options: [.allowUserInteraction, .beginFromCurrentState]) {
+                self.edge.alpha = 0
             }
             isPanning = false
             applyDeferred()
         default:
             break
         }
+    }
+
+    /// Lights the end of the row that has been dragged `overscroll` points past:
+    /// negative for the start, positive for the end.
+    private func showEdge(overscroll: CGFloat) {
+        guard overscroll != 0 else {
+            edge.alpha = 0
+            return
+        }
+        edgeAtStart.isActive = overscroll < 0
+        edgeAtEnd.isActive = overscroll > 0
+        edge.alpha = min(1, abs(overscroll) / 30) * 0.6
     }
 
     private func applyDeferred() {

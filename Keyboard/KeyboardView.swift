@@ -134,6 +134,7 @@ final class KeyboardView: UIView {
 
     override init(frame: CGRect) {
         super.init(frame: frame)
+        backgroundColor = .touchable
         isMultipleTouchEnabled = true
         trail.fillColor = nil
         trail.lineWidth = 6
@@ -410,4 +411,10 @@ final class KeyboardView: UIView {
         repeatTimer?.invalidate()
         repeatTimer = nil
     }
+}
+
+extension UIColor {
+    /// Clear to the eye, but not to iOS: touches on fully transparent parts of
+    /// a keyboard extension go to the app underneath instead of the keyboard.
+    static let touchable = UIColor(white: 0, alpha: 0.01)
 }
