@@ -59,6 +59,8 @@ final class KeyboardViewController: UIInputViewController {
         let before: String
         let after: String
         var options: [String] = []
+        /// Options Apple Intelligence came up with, lowercased; the rest are near spellings.
+        var fromAI: Set<String> = []
         var isThinking = true
         /// How many times Review has been used on this selection.
         var reviews = 0
@@ -269,6 +271,7 @@ final class KeyboardViewController: UIInputViewController {
             let filled = await predictor.fill(before: before, after: after, hints: siblings)
             guard !Task.isCancelled, let self, self.selection?.word == word else { return }
             var options = engine.replacements(for: word, from: filled ?? [])
+            self.selection?.fromAI.formUnion(options.map { $0.lowercased() })
             self.selection?.options = engine.replacements(for: word, from: options + near, limit: Self.selectionOptions)
             self.render()
 
@@ -277,6 +280,7 @@ final class KeyboardViewController: UIInputViewController {
             guard !Task.isCancelled, self.selection?.word == word else { return }
             if let pick, !options.prefix(2).contains(pick) {
                 options.insert(pick, at: min(1, options.count))
+                self.selection?.fromAI.insert(pick.lowercased())
             }
             self.selection?.options = engine.replacements(for: word, from: options + near, limit: Self.selectionOptions)
             self.selection?.isThinking = false
@@ -299,6 +303,7 @@ final class KeyboardViewController: UIInputViewController {
             let fresh = await predictor.fill(
                 before: current.before, after: current.after, hints: [], excluding: current.options + [current.word])
             guard !Task.isCancelled, let self, self.selection?.word == current.word else { return }
+            self.selection?.fromAI.formUnion((fresh ?? []).map { $0.lowercased() })
             // Each round also casts the net for near spellings a little wider.
             let wider = engine.neighbours(of: current.word, limit: 6 + 4 * round)
             self.selection?.options = engine.replacements(
@@ -321,8 +326,10 @@ final class KeyboardViewController: UIInputViewController {
         let predictor = suggester.predictor
         if let selection {
             // Shift is up where the selection starts a sentence.
-            let options = selection.options.map { Self.cased($0, for: shift) }.map {
-                Suggestion(text: $0, replace: "", insert: $0, kind: .fix, ai: true, auto: false)
+            let options = selection.options.map { option in
+                let text = Self.cased(option, for: shift)
+                let ai = selection.fromAI.contains(option.lowercased())
+                return Suggestion(text: text, replace: "", insert: text, kind: .fix, ai: ai, auto: false)
             }
             bar.show(options, highlightAuto: false, ai: selection.isThinking ? .thinking : .idle, offersReview: true)
             return

@@ -34,18 +34,12 @@ final class SuggestionBar: UIView {
         backgroundColor = .touchable
 
         var reviewConfig = UIButton.Configuration.tinted()
-        reviewConfig.title = "Review"
         reviewConfig.image = UIImage(systemName: "sparkle.magnifyingglass")
-        reviewConfig.imagePadding = 3
         reviewConfig.cornerStyle = .capsule
-        reviewConfig.contentInsets = .init(top: 4, leading: 8, bottom: 4, trailing: 10)
-        reviewConfig.preferredSymbolConfigurationForImage = .init(pointSize: 11, weight: .semibold)
-        reviewConfig.titleTextAttributesTransformer = .init { attributes in
-            var attributes = attributes
-            attributes.font = .systemFont(ofSize: 14, weight: .medium)
-            return attributes
-        }
+        reviewConfig.contentInsets = .init(top: 5, leading: 9, bottom: 5, trailing: 9)
+        reviewConfig.preferredSymbolConfigurationForImage = .init(pointSize: 14, weight: .semibold)
         review.configuration = reviewConfig
+        review.accessibilityLabel = "Review"
         review.isHidden = true
         review.setContentHuggingPriority(.required, for: .horizontal)
         review.setContentCompressionResistancePriority(.required, for: .horizontal)
@@ -228,10 +222,13 @@ final class SuggestionBar: UIView {
             }
             if suggestion.kind == .fix {
                 // Rewrites the word already typed, so make it look different.
-                config.image = UIImage(systemName: "arrow.uturn.backward")
                 config.baseForegroundColor = .tintColor
-            } else if suggestion.ai {
+            }
+            // The sparkle marks Apple Intelligence's words; the arrow the dictionary's rewrites.
+            if suggestion.ai {
                 config.image = UIImage(systemName: "sparkle")
+            } else if suggestion.kind == .fix {
+                config.image = UIImage(systemName: "arrow.uturn.backward")
             }
             config.imagePadding = 4
             config.preferredSymbolConfigurationForImage = .init(pointSize: 10, weight: .semibold)
