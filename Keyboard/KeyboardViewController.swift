@@ -322,6 +322,13 @@ final class KeyboardViewController: UIInputViewController {
         }
     }
 
+    /// `text` lower-cased if it has any capitals, otherwise with its first letter capitalised.
+    private static func togglingCase(of text: String) -> String {
+        if text.contains(where: \.isUppercase) { return text.lowercased() }
+        guard let first = text.firstIndex(where: \.isLetter) else { return text }
+        return text[..<first] + text[first...].prefix(1).uppercased() + text[text.index(after: first)...]
+    }
+
     private func render() {
         let predictor = suggester.predictor
         if let selection {
@@ -513,6 +520,11 @@ final class KeyboardViewController: UIInputViewController {
             }
 
         case .shift:
+            if selection != nil, let text = textDocumentProxy.selectedText {
+                // With a word selected, shift flips its capital instead.
+                textDocumentProxy.insertText(Self.togglingCase(of: text))
+                break
+            }
             let now = Date()
             if shift != .locked, now.timeIntervalSince(lastShiftTap) < 0.35 {
                 shift = .locked
