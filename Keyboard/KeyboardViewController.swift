@@ -197,8 +197,12 @@ final class KeyboardViewController: UIInputViewController {
         }
     }
 
+    private var spellChecks: Bool {
+        textDocumentProxy.spellCheckingType != .no
+    }
+
     private var autocorrects: Bool {
-        isProse && textDocumentProxy.autocorrectionType != .no
+        isProse && spellChecks && textDocumentProxy.autocorrectionType != .no
     }
 
     private var returnTitle: String {
@@ -361,6 +365,9 @@ final class KeyboardViewController: UIInputViewController {
         }
         let ai: SuggestionBar.AIState = !predictor.isAvailable ? .unavailable : suggester.isThinking ? .thinking : .idle
         var suggestions = isProse ? suggester.analysis.suggestions : []
+        if !spellChecks {
+            suggestions.removeAll { $0.kind == .fix || $0.kind == .correction }
+        }
         if let swiped, before.hasSuffix(swiped.text) {
             // Lead with the other words the swipe could have meant.
             let others = swiped.alternatives.map {
