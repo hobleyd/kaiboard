@@ -227,6 +227,7 @@ final class KeyboardViewController: UIInputViewController {
         let type = textDocumentProxy.keyboardType ?? .default
         guard type != fieldType else { return }
         fieldType = type
+        show(.typing)
         keys.marks = marks
         keys.page = startPage
     }
