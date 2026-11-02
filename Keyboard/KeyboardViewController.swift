@@ -187,14 +187,37 @@ final class KeyboardViewController: UIInputViewController {
         textDocumentProxy.documentContextBeforeInput ?? ""
     }
 
-    /// Fields like URLs and e-mail addresses want literal typing.
+    private var contentType: UITextContentType? {
+        textDocumentProxy.textContentType ?? nil
+    }
+
+    /// Content types that want literal typing even on the default keyboard.
+    private static let literalContentTypes: Set<UITextContentType> = [
+        .username, .password, .newPassword, .oneTimeCode, .emailAddress, .URL, .telephoneNumber,
+        .creditCardNumber, .creditCardSecurityCode, .creditCardExpiration, .creditCardExpirationMonth,
+        .creditCardExpirationYear, .flightNumber, .shipmentTrackingNumber, .cellularEID, .cellularIMEI,
+    ]
+
+    /// Content types made only of digits.
+    private static let numericContentTypes: Set<UITextContentType> = [
+        .oneTimeCode, .creditCardNumber, .creditCardSecurityCode, .creditCardExpirationMonth,
+        .creditCardExpirationYear, .cellularEID, .cellularIMEI,
+    ]
+
+    /// Fields like URLs, e-mail addresses and passwords want literal typing.
     private var isProse: Bool {
+        if let contentType, Self.literalContentTypes.contains(contentType) { return false }
         switch textDocumentProxy.keyboardType ?? .default {
         case .URL, .emailAddress, .numberPad, .phonePad, .decimalPad, .numbersAndPunctuation, .asciiCapableNumberPad:
-            false
+            return false
         default:
-            true
+            return true
         }
+    }
+
+    /// Codes and card numbers, which want a number pad whatever keyboard the app asked for.
+    private var isNumericCode: Bool {
+        contentType.map(Self.numericContentTypes.contains) ?? false
     }
 
     private var autocorrects: Bool {
