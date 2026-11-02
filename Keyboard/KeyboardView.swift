@@ -2,6 +2,8 @@ import UIKit
 
 enum Page {
     case letters, numbers, symbols
+    /// Phone-style pads for number fields, the second with a decimal separator.
+    case digits, decimal
 }
 
 enum ShiftState {
@@ -12,6 +14,8 @@ enum Key: Equatable {
     case character(String)
     case shift, backspace, space, enter, globe, emoji
     case page(Page)
+    /// An empty slot that keeps a row lined up.
+    case gap
 }
 
 final class KeyButton: UIControl {
@@ -193,6 +197,12 @@ final class KeyboardView: UIView {
                 [KeyButton(.page(.numbers), units: 1.5)] + punctuation + [KeyButton(.backspace, units: 1.5)],
                 bottom,
             ]
+        case .digits, .decimal:
+            // Apple's number pad, with return beside it.
+            let corner: Key = page == .decimal ? .character(Locale.current.decimalSeparator ?? ".") : showsGlobe ? .globe : .gap
+            return ["123", "456", "789"].map { Self.characters($0, units: 2.5) + [KeyButton(.gap, units: 2.5)] } + [
+                [KeyButton(corner, units: 2.5), KeyButton(.character("0"), units: 2.5), KeyButton(.backspace, units: 2.5), KeyButton(.enter, units: 2.5)],
+            ]
         }
     }
 
@@ -228,6 +238,9 @@ final class KeyboardView: UIView {
                 button.addTarget(self, action: #selector(pressed(_:)), for: .touchUpInside)
             case .globe:
                 configureGlobe?(button)
+            case .gap:
+                button.isHidden = true
+                button.isUserInteractionEnabled = false
             }
         }
         relabel()
@@ -240,7 +253,12 @@ final class KeyboardView: UIView {
             switch button.key {
             case .character(let text):
                 button.label.text = shift == .off ? text : text.uppercased()
-                button.label.font = .systemFont(ofSize: page == .letters ? 24 : 21, weight: .light)
+                let size: CGFloat = switch page {
+                case .letters: 24
+                case .digits, .decimal: 28
+                default: 21
+                }
+                button.label.font = .systemFont(ofSize: size, weight: .light)
             case .shift:
                 let name = switch shift {
                 case .off: "shift"
@@ -264,7 +282,10 @@ final class KeyboardView: UIView {
                 case .letters: "ABC"
                 case .numbers: "123"
                 case .symbols: "#+="
+                case .digits, .decimal: "123"
                 }
+            case .gap:
+                break
             }
         }
     }

@@ -27,6 +27,8 @@ final class KeyboardViewController: UIInputViewController {
     /// should take that back rather than eat into the query.
     private var justPickedEmoji = false
     private var heightConstraint: NSLayoutConstraint?
+    /// The keyboard type the keys were last set up for.
+    private var fieldType: UIKeyboardType?
 
     private var shift = ShiftState.off {
         didSet { keys.shift = shift }
@@ -152,6 +154,8 @@ final class KeyboardViewController: UIInputViewController {
         super.viewWillAppear(animated)
         suggester.predictor.prewarm()
         keys.showsGlobe = needsInputModeSwitchKey
+        fieldType = nil
+        applyField()
         show(.typing)
         refresh()
     }
@@ -177,6 +181,7 @@ final class KeyboardViewController: UIInputViewController {
         // Changing the bottom row rebuilds the keys, which would drop a swipe in progress.
         if !keys.isTouched {
             keys.showsGlobe = needsInputModeSwitchKey
+            applyField()
         }
         refresh()
     }
@@ -195,6 +200,24 @@ final class KeyboardViewController: UIInputViewController {
         default:
             true
         }
+    }
+
+    /// The page the keys open on, and go back to after a space.
+    private var startPage: Page {
+        switch textDocumentProxy.keyboardType ?? .default {
+        case .numberPad, .asciiCapableNumberPad: .digits
+        case .decimalPad: .decimal
+        case .numbersAndPunctuation: .numbers
+        default: .letters
+        }
+    }
+
+    /// Sets the keys up for the field, if it is a different kind from the last one.
+    private func applyField() {
+        let type = textDocumentProxy.keyboardType ?? .default
+        guard type != fieldType else { return }
+        fieldType = type
+        keys.page = startPage
     }
 
     private var autocorrects: Bool {
@@ -480,7 +503,7 @@ final class KeyboardViewController: UIInputViewController {
                 suggester.engine.learn(before: before)
             }
             if text == "'" {
-                keys.page = .letters
+                keys.page = startPage
             }
 
         case .space:
@@ -499,7 +522,7 @@ final class KeyboardViewController: UIInputViewController {
                 suggester.engine.learn(before: before)
                 lastKeyWasSpace = true
             }
-            keys.page = .letters
+            keys.page = startPage
 
         case .enter:
             autocorrect()
@@ -547,7 +570,7 @@ final class KeyboardViewController: UIInputViewController {
             show(.emoji)
             return
 
-        case .globe:
+        case .globe, .gap:
             return
         }
         refresh()
@@ -600,7 +623,7 @@ final class KeyboardViewController: UIInputViewController {
         case .enter:
             show(.emoji)
             return true
-        case .shift, .page, .emoji, .globe:
+        case .shift, .page, .emoji, .globe, .gap:
             return false
         }
         justPickedEmoji = false
