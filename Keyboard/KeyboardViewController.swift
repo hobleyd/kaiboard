@@ -214,6 +214,13 @@ final class KeyboardViewController: UIInputViewController {
         }
     }
 
+    /// Fields can ask for return to wait until something has been typed. It always closes the emoji search.
+    private var returnEnabled: Bool {
+        emojiQuery != nil || textDocumentProxy.enablesReturnKeyAutomatically != true || !before.isEmpty
+            || !(textDocumentProxy.documentContextAfterInput ?? "").isEmpty
+            || !(textDocumentProxy.selectedText ?? "").isEmpty
+    }
+
     // MARK: State
 
     /// Re-reads the document and updates suggestions, and optionally shift.
@@ -221,6 +228,7 @@ final class KeyboardViewController: UIInputViewController {
         updateSelection()
         suggester.update(before: before, useAI: isProse && useAI && selection == nil && !keys.isTouched, patience: patience)
         keys.returnTitle = returnTitle
+        keys.returnEnabled = returnEnabled
         keys.allowsSwipe = isProse && emojiQuery == nil
         if updateShift, shift != .locked, emojiQuery == nil {
             let analysis = suggester.analysis
@@ -502,6 +510,7 @@ final class KeyboardViewController: UIInputViewController {
             keys.page = .letters
 
         case .enter:
+            guard returnEnabled else { return }
             autocorrect()
             suggester.engine.learn(before: before)
             undo = nil
@@ -560,6 +569,7 @@ final class KeyboardViewController: UIInputViewController {
         }
         self.panel = panel
         emojiQuery = panel == .emojiSearch ? "" : nil
+        keys.returnEnabled = returnEnabled
         justPickedEmoji = false
         emoji.isHidden = panel != .emoji
         keys.isHidden = panel == .emoji
