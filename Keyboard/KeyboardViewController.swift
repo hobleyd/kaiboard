@@ -4,6 +4,12 @@ private final class ClickingInputView: UIInputView, UIInputViewAudioFeedback {
     var enableInputClicksWhenVisible: Bool { true }
 }
 
+/// The keys a field wants.
+private struct FieldSetup: Equatable {
+    var page: Page
+    var marks: [String]
+}
+
 final class KeyboardViewController: UIInputViewController {
     private let suggester = Suggester()
     private let bar = SuggestionBar()
@@ -27,6 +33,8 @@ final class KeyboardViewController: UIInputViewController {
     /// should take that back rather than eat into the query.
     private var justPickedEmoji = false
     private var heightConstraint: NSLayoutConstraint?
+    /// The keys the last field wanted.
+    private var fieldSetup: FieldSetup?
 
     private var shift = ShiftState.off {
         didSet { keys.shift = shift }
@@ -152,6 +160,8 @@ final class KeyboardViewController: UIInputViewController {
         super.viewWillAppear(animated)
         suggester.predictor.prewarm()
         keys.showsGlobe = needsInputModeSwitchKey
+        fieldSetup = nil
+        applyField()
         show(.typing)
         refresh()
     }
@@ -177,6 +187,7 @@ final class KeyboardViewController: UIInputViewController {
         // Changing the bottom row rebuilds the keys, which would drop a swipe in progress.
         if !keys.isTouched {
             keys.showsGlobe = needsInputModeSwitchKey
+            applyField()
         }
         refresh()
     }
@@ -222,6 +233,39 @@ final class KeyboardViewController: UIInputViewController {
 
     private var spellChecks: Bool {
         textDocumentProxy.spellCheckingType != .no
+    }
+
+    /// The page the keys open on, and go back to after a space.
+    private var startPage: Page {
+        if isNumericCode { return .digits }
+        return switch textDocumentProxy.keyboardType ?? .default {
+        case .numberPad, .asciiCapableNumberPad: .digits
+        case .decimalPad: .decimal
+        case .numbersAndPunctuation: .numbers
+        default: .letters
+        }
+    }
+
+    /// The marks beside the space bar.
+    private var marks: [String] {
+        if contentType == .emailAddress { return ["@", "."] }
+        if contentType == .URL { return ["/", "."] }
+        return switch textDocumentProxy.keyboardType ?? .default {
+        case .emailAddress: ["@", "."]
+        case .URL: ["/", "."]
+        case .twitter: ["@", "#"]
+        default: [",", "."]
+        }
+    }
+
+    /// Sets the keys up for the field, if it wants different keys from the last one.
+    private func applyField() {
+        let setup = FieldSetup(page: startPage, marks: marks)
+        guard setup != fieldSetup else { return }
+        fieldSetup = setup
+        show(.typing)
+        keys.marks = setup.marks
+        keys.page = setup.page
     }
 
     private var autocorrects: Bool {
@@ -546,7 +590,7 @@ final class KeyboardViewController: UIInputViewController {
                 learn()
             }
             if text == "'" {
-                keys.page = .letters
+                keys.page = startPage
             }
 
         case .space:
@@ -565,7 +609,7 @@ final class KeyboardViewController: UIInputViewController {
                 learn()
                 lastKeyWasSpace = true
             }
-            keys.page = .letters
+            keys.page = startPage
 
         case .enter:
             guard returnEnabled else { return }
@@ -614,7 +658,7 @@ final class KeyboardViewController: UIInputViewController {
             show(.emoji)
             return
 
-        case .globe:
+        case .globe, .gap:
             return
         }
         refresh()
@@ -668,7 +712,7 @@ final class KeyboardViewController: UIInputViewController {
         case .enter:
             show(.emoji)
             return true
-        case .shift, .page, .emoji, .globe:
+        case .shift, .page, .emoji, .globe, .gap:
             return false
         }
         justPickedEmoji = false
