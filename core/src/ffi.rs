@@ -2,7 +2,7 @@
 
 use crate::engine::{AiHints, Engine, Mode, Output};
 use crate::json;
-use crate::swipe::CONTENDER_MARGIN;
+use crate::swipe;
 use std::ffi::{c_char, CStr, CString};
 
 /// # Safety
@@ -104,12 +104,11 @@ pub unsafe extern "C" fn kb_swipe(
     let flat = std::slice::from_raw_parts(xy, points as usize * 2);
     let path: Vec<(f32, f32)> = flat.chunks_exact(2).map(|p| (p[0], p[1])).collect();
 
-    let scored = engine.swipe_scored(&before, &path, limit as usize);
+    let readings = engine.swipe_readings(&before, &path, limit as usize);
     if let Some(contenders) = contenders.as_mut() {
-        let best = scored.first().map_or(0.0, |(_, score)| *score);
-        *contenders = scored.iter().take_while(|(_, score)| best - score <= CONTENDER_MARGIN).count() as u32;
+        *contenders = swipe::contenders(&readings) as u32;
     }
-    let words: Vec<String> = scored.into_iter().map(|(word, _)| word).collect();
+    let words: Vec<String> = readings.into_iter().map(|r| r.word).collect();
     into_c(encode_words(&words))
 }
 
