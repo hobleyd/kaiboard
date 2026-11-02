@@ -221,6 +221,15 @@ final class KeyboardViewController: UIInputViewController {
             || !(textDocumentProxy.selectedText ?? "").isEmpty
     }
 
+    /// Fields can ask for a light or dark keyboard regardless of the system setting.
+    private var appearance: UIUserInterfaceStyle {
+        switch textDocumentProxy.keyboardAppearance ?? .default {
+        case .dark: .dark
+        case .light: .light
+        default: .unspecified
+        }
+    }
+
     // MARK: State
 
     /// Re-reads the document and updates suggestions, and optionally shift.
@@ -229,6 +238,7 @@ final class KeyboardViewController: UIInputViewController {
         suggester.update(before: before, useAI: isProse && useAI && selection == nil && !keys.isTouched, patience: patience)
         keys.returnTitle = returnTitle
         keys.returnEnabled = returnEnabled
+        view.overrideUserInterfaceStyle = appearance
         keys.allowsSwipe = isProse && emojiQuery == nil
         if updateShift, shift != .locked, emojiQuery == nil {
             let analysis = suggester.analysis
