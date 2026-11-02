@@ -118,6 +118,10 @@ final class KeyboardView: UIView {
     var returnTitle = "return" {
         didSet { if returnTitle != oldValue { relabel() } }
     }
+    /// The marks either side of space on the letters page.
+    var marks = [",", "."] {
+        didSet { if marks != oldValue { rebuild() } }
+    }
 
     private var rows: [[KeyButton]] = []
     private var repeatTimer: Timer?
@@ -169,7 +173,7 @@ final class KeyboardView: UIView {
         let space = 8 - bottom.reduce(0) { $0 + $1.units }
         if page == .letters {
             // The two marks prose needs most, without a trip to the numbers page.
-            bottom += [KeyButton(.character(",")), KeyButton(.space, units: space - 2), KeyButton(.character("."))]
+            bottom += [KeyButton(.character(marks[0])), KeyButton(.space, units: space - 2), KeyButton(.character(marks[1]))]
         } else {
             bottom.append(KeyButton(.space, units: space))
         }

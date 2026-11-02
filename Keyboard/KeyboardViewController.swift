@@ -212,11 +212,22 @@ final class KeyboardViewController: UIInputViewController {
         }
     }
 
+    /// The marks beside the space bar.
+    private var marks: [String] {
+        switch textDocumentProxy.keyboardType ?? .default {
+        case .emailAddress: ["@", "."]
+        case .URL: ["/", "."]
+        case .twitter: ["@", "#"]
+        default: [",", "."]
+        }
+    }
+
     /// Sets the keys up for the field, if it is a different kind from the last one.
     private func applyField() {
         let type = textDocumentProxy.keyboardType ?? .default
         guard type != fieldType else { return }
         fieldType = type
+        keys.marks = marks
         keys.page = startPage
     }
 
