@@ -33,6 +33,31 @@ const ENDPOINT_WEIGHT: f32 = 4.0;
 /// still be a serious contender for what was meant. "put", "pot" and "pit"
 /// fall within this of each other; "you" and "toy" are several times further apart.
 pub const CONTENDER_MARGIN: f32 = 3.5;
+/// How much worse, in nats, a contender's shape may fit the swipe than the
+/// best reading's, leaving word frequency aside. "pit" traces the same line as
+/// "put" and is only rarer; "facilities" scores near "fabulous" by being
+/// ten times as common, though its shape fits far worse.
+pub const SHAPE_MARGIN: f32 = 3.0;
+
+/// One word a swipe may be read as.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Reading {
+    pub word: String,
+    /// In nats; higher fits better.
+    pub score: f32,
+    /// How badly the path fits the word's shape, in nats, however common it is.
+    pub cost: f32,
+}
+
+/// How many of the leading `readings` are serious contenders for what was
+/// meant: they score nearly as well as the first and trace nearly the same shape.
+pub fn contenders(readings: &[Reading]) -> usize {
+    let Some(best) = readings.first() else { return 0 };
+    readings
+        .iter()
+        .take_while(|r| best.score - r.score <= CONTENDER_MARGIN && r.cost - best.cost <= SHAPE_MARGIN)
+        .count()
+}
 
 fn distance(a: Point, b: Point) -> f32 {
     (a.0 - b.0).hypot(a.1 - b.1)
@@ -104,19 +129,18 @@ fn ideal(word: &str, keys: &mut Vec<Point>) -> Option<()> {
 }
 
 /// Ranks `lexicon` entries `(lowercase, spelling, log probability)` by how
-/// well they explain `path` and returns the best `limit` spellings with their
-/// scores, in nats.
+/// well they explain `path` and returns the best `limit` spellings.
 pub fn decode<'a>(
     path: &[Point],
     lexicon: impl Iterator<Item = (&'a str, &'a str, f32)>,
     limit: usize,
-) -> Vec<(String, f32)> {
+) -> Vec<Reading> {
     let (Some(&start), Some(&end)) = (path.first(), path.last()) else { return Vec::new() };
     let traced = resample(path);
     let traced_length = length(path);
 
     let mut keys = Vec::with_capacity(32);
-    let mut scored: Vec<(f32, &str)> = Vec::new();
+    let mut scored: Vec<(f32, f32, &str)> = Vec::new();
     for (lower, spelling, logp) in lexicon {
         if lower.len() < 2 || ideal(lower, &mut keys).is_none() {
             continue;
@@ -145,17 +169,17 @@ pub fn decode<'a>(
             .sum::<f32>()
             / keys.len() as f32;
         let cost = DISTANCE_WEIGHT * aligned + KEY_WEIGHT * missed + ENDPOINT_WEIGHT * (ends.0 + ends.1);
-        scored.push((logp - cost, spelling));
+        scored.push((logp - cost, cost, spelling));
     }
-    scored.sort_by(|a, b| b.0.total_cmp(&a.0).then_with(|| a.1.cmp(b.1)));
+    scored.sort_by(|a, b| b.0.total_cmp(&a.0).then_with(|| a.2.cmp(b.2)));
 
-    let mut out: Vec<(String, f32)> = Vec::with_capacity(limit);
-    for (score, spelling) in scored {
+    let mut out: Vec<Reading> = Vec::with_capacity(limit);
+    for (score, cost, spelling) in scored {
         if out.len() >= limit {
             break;
         }
-        if !out.iter().any(|(seen, _)| seen == spelling) {
-            out.push((spelling.to_string(), score));
+        if !out.iter().any(|seen| seen.word == spelling) {
+            out.push(Reading { word: spelling.to_string(), score, cost });
         }
     }
     out
@@ -171,6 +195,11 @@ mod tests {
     fn trace(word: &str, wobble: f32) -> Vec<Point> {
         let mut keys = Vec::new();
         ideal(word, &mut keys).unwrap();
+        trace_through(&keys, wobble)
+    }
+
+    /// As `trace`, through `keys` wherever they are aimed.
+    fn trace_through(keys: &[Point], wobble: f32) -> Vec<Point> {
         let mut path = Vec::new();
         for (i, pair) in keys.windows(2).enumerate() {
             for step in 0..10 {
@@ -241,16 +270,38 @@ mod tests {
     #[test]
     fn only_look_alikes_are_contenders() {
         let engine = Engine::new();
-        let contenders = |word: &str| -> Vec<String> {
-            let scored = engine.swipe_scored("", &trace(word, 0.2), 8);
-            let best = scored[0].1;
-            scored.into_iter().filter(|(_, score)| best - score <= CONTENDER_MARGIN).map(|(word, _)| word).collect()
+        let close = |before: &str, path: &[Point]| -> Vec<String> {
+            let readings = engine.swipe_readings(before, path, 8);
+            readings[..contenders(&readings)].iter().map(|r| r.word.clone()).collect()
         };
-        assert_eq!(contenders("you"), ["you"]);
-        let know = contenders("know");
+        assert_eq!(close("", &trace("you", 0.2)), ["you"]);
+        let know = close("", &trace("know", 0.2));
         assert!(know[0] == "know" && !know.contains(&"knots".to_string()), "{know:?}");
-        let put = contenders("put");
+        let put = close("", &trace("put", 0.2));
         assert!(put.contains(&"pot".to_string()) && put.contains(&"pit".to_string()), "{put:?}");
+        let the = close("", &trace("there", 0.2));
+        assert!(the.contains(&"the".to_string()) && the.contains(&"there".to_string()), "{the:?}");
+    }
+
+    #[test]
+    fn commoner_words_of_another_shape_are_not_contenders() {
+        let engine = Engine::new();
+        // "fabulous" with the final "s" landing up and to the left. Ten times
+        // as common, "facilities" scores close behind, but its path is quite
+        // different; offered it, the model once picked it after "Sounds".
+        let mut keys = Vec::new();
+        ideal("fabulous", &mut keys).unwrap();
+        let last = keys.len() - 1;
+        keys[last] = (keys[last].0 - 0.3, keys[last].1 - 0.4);
+        let path = trace_through(&keys, 0.0);
+        let readings = engine.swipe_readings("Sounds ", &path, 8);
+        assert_eq!(readings[0].word, "fabulous");
+        let facilities = readings.iter().position(|r| r.word == "facilities").expect("still offered");
+        assert!(readings[0].score - readings[facilities].score <= CONTENDER_MARGIN, "{readings:?}");
+        assert!(contenders(&readings) <= facilities, "{readings:?}");
+        // Nor does "help" contend with a swiped "hello".
+        let readings = engine.swipe_readings("", &trace("hello", 0.2), 8);
+        assert_eq!(readings[..contenders(&readings)].iter().map(|r| r.word.as_str()).collect::<Vec<_>>(), ["hello"]);
     }
 
     #[test]

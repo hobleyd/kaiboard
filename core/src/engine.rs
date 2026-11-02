@@ -4,6 +4,7 @@
 use crate::context::{self, is_apostrophe, Context};
 use crate::dict::Dict;
 use crate::distance::{adjacent, typo_cost};
+use crate::swipe::Reading;
 use std::collections::HashMap;
 
 /// Apostrophe-less spellings that are almost always meant as contractions.
@@ -353,6 +354,11 @@ impl Engine {
 
     /// As `swipe`, with each word's score in nats; higher fits better.
     pub fn swipe_scored(&self, before: &str, path: &[(f32, f32)], limit: usize) -> Vec<(String, f32)> {
+        self.swipe_readings(before, path, limit).into_iter().map(|r| (r.word, r.score)).collect()
+    }
+
+    /// As `swipe`, with how well each word fits.
+    pub fn swipe_readings(&self, before: &str, path: &[(f32, f32)], limit: usize) -> Vec<Reading> {
         let ctx = context::parse(before);
         // A swipe starts a new word, so whatever is at the cursor precedes it.
         let prev = if ctx.current.is_empty() { ctx.prev_word } else { Some(ctx.current) }.map(normalize);
@@ -374,30 +380,34 @@ impl Engine {
         let mut scored = crate::swipe::decode(path, lexicon, limit);
         // The letter keys have no apostrophe, so contractions are swiped without one.
         let mut extra = Vec::new();
-        for (word, score) in &mut scored {
-            let lower = normalize(word);
+        for reading in &mut scored {
+            let lower = normalize(&reading.word);
             if let Some(full) = fixup(&lower) {
-                *word = full.to_string();
+                reading.word = full.to_string();
             } else if let Some(&(_, full)) = APOSTROPHE_LESS.iter().find(|(bare, _)| *bare == lower) {
-                extra.push((full.to_string(), *score - crate::swipe::CONTENDER_MARGIN - 0.1));
+                extra.push(Reading {
+                    word: full.to_string(),
+                    score: reading.score - crate::swipe::CONTENDER_MARGIN - 0.1,
+                    cost: reading.cost,
+                });
             }
         }
-        for (word, score) in extra {
-            if !scored.iter().any(|(seen, _)| normalize(seen) == normalize(&word)) {
-                scored.push((word, score));
+        for reading in extra {
+            if !scored.iter().any(|seen| normalize(&seen.word) == normalize(&reading.word)) {
+                scored.push(reading);
             }
         }
         // A swipe that reads best as one of these was meant. As a runner-up
         // it stays on offer, but out of contention, so that second thoughts
         // about "duck" never land on it.
-        if let Some(best) = scored.first().map(|(_, score)| *score) {
-            for (word, score) in scored.iter_mut().skip(1) {
-                if blocked(&normalize(word)) {
-                    *score = score.min(best - crate::swipe::CONTENDER_MARGIN - 0.1);
+        if let Some(best) = scored.first().map(|r| r.score) {
+            for reading in scored.iter_mut().skip(1) {
+                if blocked(&normalize(&reading.word)) {
+                    reading.score = reading.score.min(best - crate::swipe::CONTENDER_MARGIN - 0.1);
                 }
             }
         }
-        scored.sort_by(|a, b| b.1.total_cmp(&a.1));
+        scored.sort_by(|a, b| b.score.total_cmp(&a.score));
         scored.truncate(limit);
         scored
     }
