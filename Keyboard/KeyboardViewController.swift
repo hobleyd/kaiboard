@@ -220,8 +220,12 @@ final class KeyboardViewController: UIInputViewController {
         contentType.map(Self.numericContentTypes.contains) ?? false
     }
 
+    private var spellChecks: Bool {
+        textDocumentProxy.spellCheckingType != .no
+    }
+
     private var autocorrects: Bool {
-        isProse && textDocumentProxy.autocorrectionType != .no
+        isProse && spellChecks && textDocumentProxy.autocorrectionType != .no
     }
 
     /// Whether words typed here may be learned. Postcodes are prose, for their
@@ -255,6 +259,22 @@ final class KeyboardViewController: UIInputViewController {
         }
     }
 
+    /// Fields can ask for return to wait until something has been typed. It always closes the emoji search.
+    private var returnEnabled: Bool {
+        emojiQuery != nil || textDocumentProxy.enablesReturnKeyAutomatically != true || !before.isEmpty
+            || !(textDocumentProxy.documentContextAfterInput ?? "").isEmpty
+            || !(textDocumentProxy.selectedText ?? "").isEmpty
+    }
+
+    /// Fields can ask for a light or dark keyboard regardless of the system setting.
+    private var appearance: UIUserInterfaceStyle {
+        switch textDocumentProxy.keyboardAppearance ?? .default {
+        case .dark: .dark
+        case .light: .light
+        default: .unspecified
+        }
+    }
+
     // MARK: State
 
     /// Re-reads the document and updates suggestions, and optionally shift.
@@ -262,6 +282,8 @@ final class KeyboardViewController: UIInputViewController {
         updateSelection()
         suggester.update(before: before, useAI: isProse && useAI && selection == nil && !keys.isTouched, patience: patience)
         keys.returnTitle = returnTitle
+        keys.returnEnabled = returnEnabled
+        view.overrideUserInterfaceStyle = appearance
         keys.allowsSwipe = isProse && emojiQuery == nil
         if updateShift, shift != .locked, emojiQuery == nil {
             let analysis = suggester.analysis
@@ -384,6 +406,9 @@ final class KeyboardViewController: UIInputViewController {
         }
         let ai: SuggestionBar.AIState = !predictor.isAvailable ? .unavailable : suggester.isThinking ? .thinking : .idle
         var suggestions = isProse ? suggester.analysis.suggestions : []
+        if !spellChecks {
+            suggestions.removeAll { $0.kind == .fix || $0.kind == .correction }
+        }
         if let swiped, before.hasSuffix(swiped.text) {
             // Lead with the other words the swipe could have meant.
             let others = swiped.alternatives.map {
@@ -543,6 +568,7 @@ final class KeyboardViewController: UIInputViewController {
             keys.page = .letters
 
         case .enter:
+            guard returnEnabled else { return }
             autocorrect()
             learn()
             undo = nil
@@ -601,6 +627,7 @@ final class KeyboardViewController: UIInputViewController {
         }
         self.panel = panel
         emojiQuery = panel == .emojiSearch ? "" : nil
+        keys.returnEnabled = returnEnabled
         justPickedEmoji = false
         emoji.isHidden = panel != .emoji
         keys.isHidden = panel == .emoji

@@ -114,6 +114,9 @@ final class KeyboardView: UIView {
     var returnTitle = "return" {
         didSet { if returnTitle != oldValue { relabel() } }
     }
+    var returnEnabled = true {
+        didSet { if returnEnabled != oldValue { relabel() } }
+    }
 
     private var rows: [[KeyButton]] = []
     private var repeatTimer: Timer?
@@ -259,6 +262,8 @@ final class KeyboardView: UIView {
                 button.label.text = "space"
             case .enter:
                 button.label.text = returnTitle
+                button.label.textColor = returnEnabled ? .label : .tertiaryLabel
+                button.isEnabled = returnEnabled
             case .page(let target):
                 button.label.text = switch target {
                 case .letters: "ABC"
