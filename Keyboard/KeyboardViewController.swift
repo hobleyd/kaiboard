@@ -201,6 +201,31 @@ final class KeyboardViewController: UIInputViewController {
         isProse && textDocumentProxy.autocorrectionType != .no
     }
 
+    /// Codes, credentials and addresses shouldn't come back as suggestions.
+    private static let literalContent: Set<UITextContentType> = [
+        .username, .password, .newPassword, .oneTimeCode, .emailAddress, .URL, .telephoneNumber,
+        .postalCode, .flightNumber, .shipmentTrackingNumber, .creditCardNumber, .creditCardSecurityCode,
+        .creditCardExpiration, .creditCardExpirationMonth, .creditCardExpirationYear,
+    ]
+
+    /// Whether words typed here may be learned.
+    private var learns: Bool {
+        guard autocorrects else { return false }
+        return textDocumentProxy.textContentType.map { !Self.literalContent.contains($0) } ?? true
+    }
+
+    private func learn() {
+        if learns {
+            suggester.engine.learn(before: before)
+        }
+    }
+
+    private func learnWord(_ word: String) {
+        if learns {
+            suggester.engine.learnWord(word)
+        }
+    }
+
     private var returnTitle: String {
         switch textDocumentProxy.returnKeyType ?? .default {
         case .go: "go"
@@ -370,7 +395,7 @@ final class KeyboardViewController: UIInputViewController {
         swipeChoice?.cancel()
         swipeChoice = nil
         if let swiped, before.hasSuffix(swiped.text) {
-            suggester.engine.learn(before: before)
+            learn()
         }
         swiped = nil
     }
@@ -477,7 +502,7 @@ final class KeyboardViewController: UIInputViewController {
             textDocumentProxy.insertText(text)
             if endsWord {
                 undo?.trailing = text
-                suggester.engine.learn(before: before)
+                learn()
             }
             if text == "'" {
                 keys.page = .letters
@@ -496,14 +521,14 @@ final class KeyboardViewController: UIInputViewController {
                 autocorrect()
                 textDocumentProxy.insertText(" ")
                 undo?.trailing = " "
-                suggester.engine.learn(before: before)
+                learn()
                 lastKeyWasSpace = true
             }
             keys.page = .letters
 
         case .enter:
             autocorrect()
-            suggester.engine.learn(before: before)
+            learn()
             undo = nil
             textDocumentProxy.insertText("\n")
 
@@ -511,7 +536,7 @@ final class KeyboardViewController: UIInputViewController {
             if let pendingUndo, before.hasSuffix(pendingUndo.corrected + pendingUndo.trailing) {
                 // Take back the auto-correction and remember the word is intentional.
                 replace(pendingUndo.corrected + pendingUndo.trailing, with: pendingUndo.original + pendingUndo.trailing)
-                suggester.engine.learnWord(pendingUndo.original)
+                learnWord(pendingUndo.original)
             } else if let pendingSwipe, before.hasSuffix(pendingSwipe.text) {
                 // One backspace takes back a whole swiped word.
                 replace(pendingSwipe.text, with: "")
@@ -632,14 +657,14 @@ final class KeyboardViewController: UIInputViewController {
             replace(suggestion.replace, with: suggestion.insert)
             spaceIsAutomatic = suggestion.insert.hasSuffix(" ")
         case .verbatim:
-            suggester.engine.learnWord(suggestion.text)
+            learnWord(suggestion.text)
             textDocumentProxy.insertText(" ")
             spaceIsAutomatic = true
         default:
             replace(suggestion.replace, with: suggestion.insert + " ")
             spaceIsAutomatic = true
         }
-        suggester.engine.learn(before: before)
+        learn()
         refresh()
     }
 }
