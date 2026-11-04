@@ -134,6 +134,8 @@ final class KeyboardView: UIView {
         let button: KeyButton
         var points: [CGPoint]
         var isSwipe = false
+        /// When the finger landed.
+        let start: TimeInterval
         /// The longest any of its events waited to be handled, in seconds.
         var lag: TimeInterval
     }
@@ -142,6 +144,10 @@ final class KeyboardView: UIView {
     var isTouched: Bool { !tracks.isEmpty }
     private let trail = CAShapeLayer()
     private let margin: CGFloat = 3
+    /// How far, in key widths, a finger must stray from where it landed for
+    /// the touch to count as a swipe once it lifts. Neighbouring keys are a
+    /// whole width apart, so a fast tap that slides off its key stays a tap.
+    private let swipeReach: CGFloat = 1.1
 
     override init(frame: CGRect) {
         super.init(frame: frame)
@@ -361,7 +367,7 @@ final class KeyboardView: UIView {
                 continue
             }
             button.isHighlighted = true
-            tracks[touch] = Track(button: button, points: [point], lag: lag(of: touch))
+            tracks[touch] = Track(button: button, points: [point], start: touch.timestamp, lag: lag(of: touch))
         }
         if isTouched {
             onTouchDown?()
@@ -404,11 +410,23 @@ final class KeyboardView: UIView {
             if late > 0.1 {
                 note("touch handled \(Int(late * 1000)) ms late")
             }
-            if track.isSwipe {
-                trail.path = nil
-                onSwipe?(track.points.map { CGPoint(x: ($0.x - margin) / unit, y: $0.y / rowHeight) })
-            } else {
+            guard track.isSwipe else {
                 onKey?(track.button.key)
+                continue
+            }
+            trail.path = nil
+            let origin = track.points[0]
+            let reach = track.points.map { hypot($0.x - origin.x, $0.y - origin.y) }.max() ?? 0
+            let detail = String(format: "%.1f keys in %d ms", reach / unit, Int((touch.timestamp - track.start) * 1000))
+            if reach < unit * swipeReach {
+                // Too short to be a word: a tap that slid, typed where it landed.
+                note("short swipe typed as a tap: \(detail)")
+                onKey?(track.button.key)
+            } else {
+                if reach < unit * 2 {
+                    note("short swipe kept: \(detail)")
+                }
+                onSwipe?(track.points.map { CGPoint(x: ($0.x - margin) / unit, y: $0.y / rowHeight) })
             }
         }
     }
