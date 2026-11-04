@@ -11,9 +11,11 @@ case "${PLATFORM_NAME:-iphoneos}" in
 esac
 
 # Xcode exports SDKROOT and friends for the iOS SDK, which confuses cargo's own
-# toolchain discovery, so start from a clean environment.
+# toolchain discovery, so start from a clean environment. GitHub's macOS
+# runners have Homebrew's rustup, which is keg-only: cargo is in its opt/ bin,
+# not ~/.cargo/bin or /opt/homebrew/bin.
 exec env -i \
   HOME="$HOME" \
-  PATH="$HOME/.cargo/bin:/opt/homebrew/bin:/usr/bin:/bin" \
+  PATH="$HOME/.cargo/bin:/opt/homebrew/opt/rustup/bin:/opt/homebrew/bin:/usr/bin:/bin" \
   IPHONEOS_DEPLOYMENT_TARGET="${IPHONEOS_DEPLOYMENT_TARGET:-26.0}" \
   cargo build --release --target "$target"

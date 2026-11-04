@@ -54,10 +54,14 @@ number is the workflow run number. The upload needs these repository secrets:
 |---|---|
 | `IOS_DIST_CERT_P12` | Apple Distribution certificate and key, as base64 of the `.p12` |
 | `IOS_DIST_CERT_PASSWORD` | Password of that `.p12` |
-| `KEYCHAIN_PASSWORD` | Any password; protects the temporary keychain on the runner |
 | `IOS_PROVISIONING_PROFILE_B64` | App Store profile named `kAIboard App Store` for `au.com.sharpblue.kaiboard`, base64 |
 | `IOS_KEYBOARD_PROVISIONING_PROFILE_B64` | App Store profile named `kAIboard Keyboard App Store` for `au.com.sharpblue.kaiboard.keyboard`, base64 |
 | `ASC_KEY_ID`, `ASC_ISSUER_ID`, `ASC_KEY_P8` | App Store Connect API key used for the upload |
+
+All of them are pushed from the `../ansible` repo, which vaults the
+certificate, API key and profiles every app shares (`scripts/add_apple_signing.sh`,
+`scripts/add_provisioning_profile.sh`). Renew them there rather than with a
+hand-run `gh secret set`, or the vault falls behind the secrets.
 
 ## Word data
 

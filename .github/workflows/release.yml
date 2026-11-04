@@ -53,7 +53,6 @@ jobs:
         env:
           IOS_DIST_CERT_P12: ${{ secrets.IOS_DIST_CERT_P12 }}
           IOS_DIST_CERT_PASSWORD: ${{ secrets.IOS_DIST_CERT_PASSWORD }}
-          KEYCHAIN_PASSWORD: ${{ secrets.KEYCHAIN_PASSWORD }}
           IOS_PROVISIONING_PROFILE_B64: ${{ secrets.IOS_PROVISIONING_PROFILE_B64 }}
           IOS_KEYBOARD_PROVISIONING_PROFILE_B64: ${{ secrets.IOS_KEYBOARD_PROVISIONING_PROFILE_B64 }}
           ASC_KEY_ID: ${{ secrets.ASC_KEY_ID }}
@@ -61,7 +60,7 @@ jobs:
           ASC_KEY_P8: ${{ secrets.ASC_KEY_P8 }}
         run: |
           missing=""
-          for name in IOS_DIST_CERT_P12 IOS_DIST_CERT_PASSWORD KEYCHAIN_PASSWORD IOS_PROVISIONING_PROFILE_B64 \
+          for name in IOS_DIST_CERT_P12 IOS_DIST_CERT_PASSWORD IOS_PROVISIONING_PROFILE_B64 \
                       IOS_KEYBOARD_PROVISIONING_PROFILE_B64 ASC_KEY_ID ASC_ISSUER_ID ASC_KEY_P8; do
             if [ -z "${!name}" ]; then missing="$missing $name"; fi
           done
@@ -83,11 +82,12 @@ jobs:
         env:
           IOS_DIST_CERT_P12_B64: ${{ secrets.IOS_DIST_CERT_P12 }}
           IOS_DIST_CERT_PASSWORD: ${{ secrets.IOS_DIST_CERT_PASSWORD }}
-          KEYCHAIN_PASSWORD: ${{ secrets.KEYCHAIN_PASSWORD }}
           APP_PROFILE_B64: ${{ secrets.IOS_PROVISIONING_PROFILE_B64 }}
           KEYBOARD_PROFILE_B64: ${{ secrets.IOS_KEYBOARD_PROVISIONING_PROFILE_B64 }}
         run: |
           KEYCHAIN_PATH="$RUNNER_TEMP/ios-signing.keychain-db"
+          # The keychain only lives for this job, so any random password will do.
+          KEYCHAIN_PASSWORD=$(openssl rand -hex 24)
           echo "$IOS_DIST_CERT_P12_B64" | base64 --decode > "$RUNNER_TEMP/ios_cert.p12"
 
           security create-keychain -p "$KEYCHAIN_PASSWORD" "$KEYCHAIN_PATH"
