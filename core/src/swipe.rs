@@ -38,6 +38,16 @@ pub const CONTENDER_MARGIN: f32 = 3.5;
 /// "put" and is only rarer; "facilities" scores near "fabulous" by being
 /// ten times as common, though its shape fits far worse.
 pub const SHAPE_MARGIN: f32 = 3.0;
+/// A letter where the path doubles back on itself by more than this angle,
+/// in radians, is a turnaround: "n" in "and", "n" in "into".
+const TURNAROUND: f32 = 2.0;
+/// How far, as a fraction, a finger is taken to reach towards a turnaround's
+/// key from the point between its neighbours before it heads back. Fingers
+/// turn early, so a swiped "and" turns at "v" and traces "saved".
+const TURNAROUND_REACH: f32 = 0.65;
+/// Nats each turnaround taken early costs, so that a word that zigzags, like
+/// "facilities", isn't let off every corner it has.
+const TURNAROUND_WEIGHT: f32 = 1.5;
 
 /// One word a swipe may be read as.
 #[derive(Clone, Debug, PartialEq)]
@@ -128,6 +138,24 @@ fn ideal(word: &str, keys: &mut Vec<Point>) -> Option<()> {
     (!keys.is_empty()).then_some(())
 }
 
+/// `keys` with each turnaround pulled in to where a finger usually turns back,
+/// and how many there were, or `None` if the path has no turnarounds.
+fn turned_early(keys: &[Point]) -> Option<(Vec<Point>, usize)> {
+    let mut out = keys.to_vec();
+    let mut turns = 0;
+    for (i, w) in keys.windows(3).enumerate() {
+        let (a, b, c) = (w[0], w[1], w[2]);
+        let (u, v) = ((b.0 - a.0, b.1 - a.1), (c.0 - b.0, c.1 - b.1));
+        let turn = (u.0 * v.1 - u.1 * v.0).atan2(u.0 * v.0 + u.1 * v.1).abs();
+        if turn > TURNAROUND {
+            let mid = ((a.0 + c.0) / 2.0, (a.1 + c.1) / 2.0);
+            out[i + 1] = (mid.0 + (b.0 - mid.0) * TURNAROUND_REACH, mid.1 + (b.1 - mid.1) * TURNAROUND_REACH);
+            turns += 1;
+        }
+    }
+    (turns > 0).then_some((out, turns))
+}
+
 /// Ranks `lexicon` entries `(lowercase, spelling, log probability)` by how
 /// well they explain `path` and returns the best `limit` spellings.
 pub fn decode<'a>(
@@ -149,26 +177,39 @@ pub fn decode<'a>(
         if ends.0 > ENDPOINT_SLACK || ends.1 > ENDPOINT_SLACK {
             continue;
         }
-        // Fingers cut corners, so a real path is usually a little shorter than the ideal one.
-        let ideal_length = length(&keys);
-        if ideal_length > traced_length * 1.8 + 1.0 || ideal_length < traced_length * 0.5 - 1.0 {
-            continue;
-        }
-        let wanted = resample(&keys);
-        let mean = traced.iter().zip(&wanted).map(|(&a, &b)| distance(a, b)).sum::<f32>() / SAMPLES as f32;
-        if mean > MAX_MEAN_DISTANCE {
-            continue;
-        }
-        let aligned = aligned_distance(&traced, &wanted);
-        if aligned > MAX_ALIGNED_DISTANCE {
-            continue;
-        }
-        let missed = keys
-            .iter()
-            .map(|&key| path.iter().map(|&point| distance(key, point)).fold(f32::INFINITY, f32::min))
-            .sum::<f32>()
-            / keys.len() as f32;
-        let cost = DISTANCE_WEIGHT * aligned + KEY_WEIGHT * missed + ENDPOINT_WEIGHT * (ends.0 + ends.1);
+        // A word's shape is judged against both the path through its keys and
+        // the one a finger takes that turns back early.
+        let fit = |keys: &[Point]| -> Option<f32> {
+            // Fingers cut corners, so a real path is usually a little shorter than the ideal one.
+            let ideal_length = length(keys);
+            if ideal_length > traced_length * 1.8 + 1.0 || ideal_length < traced_length * 0.5 - 1.0 {
+                return None;
+            }
+            let wanted = resample(keys);
+            let mean = traced.iter().zip(&wanted).map(|(&a, &b)| distance(a, b)).sum::<f32>() / SAMPLES as f32;
+            if mean > MAX_MEAN_DISTANCE {
+                return None;
+            }
+            let aligned = aligned_distance(&traced, &wanted);
+            if aligned > MAX_ALIGNED_DISTANCE {
+                return None;
+            }
+            let missed = keys
+                .iter()
+                .map(|&key| path.iter().map(|&point| distance(key, point)).fold(f32::INFINITY, f32::min))
+                .sum::<f32>()
+                / keys.len() as f32;
+            Some(DISTANCE_WEIGHT * aligned + KEY_WEIGHT * missed)
+        };
+        let early = turned_early(&keys).and_then(|(early, turns)| Some(fit(&early)? + TURNAROUND_WEIGHT * turns as f32));
+        let shape = match (fit(&keys), early) {
+            (Some(a), Some(b)) => a.min(b),
+            (a, b) => match a.or(b) {
+                Some(cost) => cost,
+                None => continue,
+            },
+        };
+        let cost = shape + ENDPOINT_WEIGHT * (ends.0 + ends.1);
         scored.push((logp - cost, cost, spelling));
     }
     scored.sort_by(|a, b| b.0.total_cmp(&a.0).then_with(|| a.2.cmp(b.2)));
@@ -332,6 +373,20 @@ mod tests {
         let got = engine.swipe("", &trace("were", 0.2), 8);
         assert_eq!(got[0], "were");
         assert!(got.contains(&"we're".to_string()), "{got:?}");
+    }
+
+    #[test]
+    fn turnarounds_may_turn_back_early() {
+        let engine = Engine::new();
+        // Turning back from "n" a third of the way short traces "saved"
+        // and "Indi" more closely than the words meant.
+        for (before, word) in [("fish ", "and"), ("", "and"), ("went ", "into")] {
+            let mut keys = Vec::new();
+            ideal(word, &mut keys).unwrap();
+            let mid = ((keys[0].0 + keys[2].0) / 2.0, (keys[0].1 + keys[2].1) / 2.0);
+            keys[1] = (mid.0 + (keys[1].0 - mid.0) * 0.6, mid.1 + (keys[1].1 - mid.1) * 0.6);
+            assert_eq!(engine.swipe(before, &trace_through(&keys, 0.1), 1), [word], "{before}{word}");
+        }
     }
 
     /// Swipes recorded on a phone, one per line: the word meant, then the
