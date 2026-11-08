@@ -144,6 +144,11 @@ final class KeyboardViewController: UIInputViewController {
         }
         bar.onSelect = { [weak self] suggestion in self?.accept(suggestion) }
         bar.onReview = { [weak self] in self?.reviewSelection() }
+        // Only Apple's keyboard can fetch passwords, so the key button hands over to it, the way the globe does.
+        bar.configureCredentials = { [weak self] button in
+            guard let self else { return }
+            button.addTarget(self, action: #selector(self.handleInputModeList(from:with:)), for: .allTouchEvents)
+        }
         bar.statusText = { [weak self] in
             guard let self else { return "" }
             var text = self.suggester.predictor.statusText
@@ -214,6 +219,13 @@ final class KeyboardViewController: UIInputViewController {
         .oneTimeCode, .creditCardNumber, .creditCardSecurityCode, .creditCardExpirationMonth,
         .creditCardExpirationYear, .cellularEID, .cellularIMEI,
     ]
+
+    private static let credentialTypes: Set<UITextContentType> = [.username, .password, .newPassword, .oneTimeCode, .emailAddress]
+
+    /// A field a password manager could fill: a username, password or sign-in code.
+    private var isCredential: Bool {
+        contentType.map(Self.credentialTypes.contains) ?? false
+    }
 
     /// Fields like URLs, e-mail addresses and passwords want literal typing.
     private var isProse: Bool {
@@ -460,7 +472,7 @@ final class KeyboardViewController: UIInputViewController {
             }
             suggestions = others + suggestions.filter { $0.kind != .fix }
         }
-        bar.show(suggestions, highlightAuto: autocorrects, ai: ai)
+        bar.show(suggestions, highlightAuto: autocorrects, ai: ai, offersCredentials: isCredential)
     }
 
     // MARK: Editing

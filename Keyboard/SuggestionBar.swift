@@ -6,6 +6,10 @@ final class SuggestionBar: UIView {
     var onSelect: ((Suggestion) -> Void)?
     /// The Review button was tapped: the user wants more options.
     var onReview: (() -> Void)?
+    /// Wires up the key button shown in sign-in fields, much as the globe key is.
+    var configureCredentials: ((UIControl) -> Void)? {
+        didSet { configureCredentials?(credentials) }
+    }
     /// Supplies the text shown when the status light is tapped.
     var statusText: (() -> String)?
 
@@ -13,6 +17,7 @@ final class SuggestionBar: UIView {
     private static let visibleSlots: CGFloat = 3
 
     private let review = UIButton(type: .system)
+    private let credentials = UIButton(type: .system)
     private let scroll = UIScrollView()
     private let stack = UIStackView()
     private let status = UIButton(type: .system)
@@ -45,6 +50,14 @@ final class SuggestionBar: UIView {
         review.setContentCompressionResistancePriority(.required, for: .horizontal)
         review.addTarget(self, action: #selector(reviewTapped), for: .touchUpInside)
 
+        var credentialsConfig = reviewConfig
+        credentialsConfig.image = UIImage(systemName: "key.fill")
+        credentials.configuration = credentialsConfig
+        credentials.accessibilityLabel = "Passwords"
+        credentials.isHidden = true
+        credentials.setContentHuggingPriority(.required, for: .horizontal)
+        credentials.setContentCompressionResistancePriority(.required, for: .horizontal)
+
         scroll.showsHorizontalScrollIndicator = false
         // The bar scrolls itself, from a pan anywhere on it in any direction.
         // The scroll view's own recogniser has to guess whether a touch is a
@@ -74,7 +87,7 @@ final class SuggestionBar: UIView {
         edge.alpha = 0
         edge.isUserInteractionEnabled = false
 
-        let row = UIStackView(arrangedSubviews: [review, scroll, status])
+        let row = UIStackView(arrangedSubviews: [credentials, review, scroll, status])
         row.axis = .horizontal
         row.alignment = .center
         row.spacing = 4
@@ -179,12 +192,13 @@ final class SuggestionBar: UIView {
         update?()
     }
 
-    func show(_ suggestions: [Suggestion], highlightAuto: Bool, ai: AIState, offersReview: Bool = false) {
+    func show(_ suggestions: [Suggestion], highlightAuto: Bool, ai: AIState, offersReview: Bool = false, offersCredentials: Bool = false) {
         // Suggestions often change just as a finger starts scrolling the old
         // ones. Swapping the buttons out from under it would kill the drag.
         guard !isPanning else {
             deferred = { [weak self] in
-                self?.show(suggestions, highlightAuto: highlightAuto, ai: ai, offersReview: offersReview)
+                self?.show(
+                    suggestions, highlightAuto: highlightAuto, ai: ai, offersReview: offersReview, offersCredentials: offersCredentials)
             }
             return
         }
@@ -196,6 +210,7 @@ final class SuggestionBar: UIView {
         let unchanged = suggestions == previous
         self.suggestions = suggestions
         review.isHidden = !offersReview
+        credentials.isHidden = !offersCredentials
 
         while buttons.count > suggestions.count {
             buttons.removeLast().removeFromSuperview()
