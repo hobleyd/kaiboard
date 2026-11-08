@@ -66,11 +66,15 @@ final class TextEngine {
     /// Decodes a path swiped across the letter keys into candidate words, best
     /// first. Points are in key widths from the left of the top letter row
     /// and rows from its top. The first `contenders` words fit the path nearly
-    /// equally well; the others are long shots.
-    func swipe(before: String, path: [CGPoint], limit: Int = 3) -> (words: [String], contenders: Int) {
+    /// equally well; the others are long shots. A path that starts or ends on
+    /// the space bar, between words, says so with `fromSpace` or `toSpace`.
+    func swipe(
+        before: String, path: [CGPoint], fromSpace: Bool = false, toSpace: Bool = false, limit: Int = 3
+    ) -> (words: [String], contenders: Int) {
         let flat = path.flatMap { [Float($0.x), Float($0.y)] }
+        let spaces = (fromSpace ? KB_FROM_SPACE : 0) | (toSpace ? KB_TO_SPACE : 0)
         var contenders: UInt32 = 0
-        let words = Self.words(kb_swipe(handle, before, flat, UInt32(path.count), UInt32(limit), &contenders))
+        let words = Self.words(kb_swipe(handle, before, flat, UInt32(path.count), spaces, UInt32(limit), &contenders))
         return (words, min(Int(contenders), words.count))
     }
 

@@ -129,7 +129,7 @@ final class KeyboardViewController: UIInputViewController {
         heightConstraint = height
 
         keys.onKey = { [weak self] key in self?.handle(key) }
-        keys.onSwipe = { [weak self] path in self?.handleSwipe(path) }
+        keys.onSwipe = { [weak self] path, fromSpace, toSpace in self?.handleSwipe(path, fromSpace: fromSpace, toSpace: toSpace) }
         // Suggestions for the text as it stood are stale once the next word is
         // under way, and generating them competes with tracking the finger.
         keys.onTouchDown = { [weak self] in self?.suggester.pause() }
@@ -485,12 +485,13 @@ final class KeyboardViewController: UIInputViewController {
         swiped = nil
     }
 
-    private func handleSwipe(_ path: [CGPoint]) {
+    private func handleSwipe(_ path: [CGPoint], fromSpace: Bool, toSpace: Bool) {
         UIDevice.current.playInputClick()
         undo = nil
         settleSwipe()
         lastKeyWasSpace = false
-        let (words, contenders) = suggester.engine.swipe(before: before, path: path, limit: Self.swipeCandidates)
+        let (words, contenders) = suggester.engine.swipe(
+            before: before, path: path, fromSpace: fromSpace, toSpace: toSpace, limit: Self.swipeCandidates)
         guard let best = words.first else {
             keys.lastProblem = ("swipe of \(path.count) points matched no word", Date())
             return

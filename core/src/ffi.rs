@@ -5,6 +5,10 @@ use crate::json;
 use crate::swipe;
 use std::ffi::{c_char, CStr, CString};
 
+/// `kb_swipe` flags: the path starts on the space bar, or ends on it.
+const KB_FROM_SPACE: u32 = 1;
+const KB_TO_SPACE: u32 = 2;
+
 /// # Safety
 /// `ptr` must be null or a valid NUL-terminated string.
 unsafe fn text<'a>(ptr: *const c_char) -> Option<std::borrow::Cow<'a, str>> {
@@ -93,6 +97,7 @@ pub unsafe extern "C" fn kb_swipe(
     before: *const c_char,
     xy: *const f32,
     points: u32,
+    spaces: u32,
     limit: u32,
     contenders: *mut u32,
 ) -> *mut c_char {
@@ -104,7 +109,8 @@ pub unsafe extern "C" fn kb_swipe(
     let flat = std::slice::from_raw_parts(xy, points as usize * 2);
     let path: Vec<(f32, f32)> = flat.chunks_exact(2).map(|p| (p[0], p[1])).collect();
 
-    let readings = engine.swipe_readings(&before, &path, limit as usize);
+    let through = swipe::Through { from_space: spaces & KB_FROM_SPACE != 0, to_space: spaces & KB_TO_SPACE != 0 };
+    let readings = engine.swipe_through(&before, &path, through, limit as usize);
     if let Some(contenders) = contenders.as_mut() {
         *contenders = swipe::contenders(&readings) as u32;
     }

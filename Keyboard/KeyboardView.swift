@@ -96,8 +96,10 @@ final class KeyButton: UIControl {
 final class KeyboardView: UIView {
     var onKey: ((Key) -> Void)?
     /// A finger was dragged across the letter keys. Points are in key widths
-    /// from the left of the top letter row and rows from its top.
-    var onSwipe: (([CGPoint]) -> Void)?
+    /// from the left of the top letter row and rows from its top. A swipe
+    /// that runs onto the space bar reports its word there, ending the path
+    /// on the space bar, and the next word's path starts from it.
+    var onSwipe: ((_ path: [CGPoint], _ fromSpace: Bool, _ toSpace: Bool) -> Void)?
     /// A finger landed on a character key, before it is known whether it will tap or swipe.
     var onTouchDown: (() -> Void)?
     var allowsSwipe = true
@@ -134,6 +136,10 @@ final class KeyboardView: UIView {
         let button: KeyButton
         var points: [CGPoint]
         var isSwipe = false
+        /// Where in `points` the word being swiped began.
+        var wordStart = 0
+        /// The finger ran onto the space bar, which ended a word.
+        var onSpace = false
         /// When the finger landed.
         let start: TimeInterval
         /// The longest any of its events waited to be handled, in seconds.
@@ -389,20 +395,35 @@ final class KeyboardView: UIView {
                 track.isSwipe = true
                 track.button.isHighlighted = false
             }
+            if track.isSwipe, let space = spaceBar {
+                if space.frame.contains(point), !track.onSpace {
+                    // Reaching the space bar finishes a word; the swipe may go on to the next.
+                    track.onSpace = true
+                    space.isHighlighted = true
+                    finishWord(of: track, endingOnSpace: true)
+                } else if track.onSpace, let over = characterButton(at: point), isLetter(over) {
+                    track.onSpace = false
+                    space.isHighlighted = false
+                    // The next word's path starts where the finger left the space bar.
+                    track.wordStart = track.points.lastIndex { space.frame.contains($0) } ?? track.points.count - 1
+                }
+            }
             tracks[touch] = track
             if track.isSwipe {
-                let path = UIBezierPath()
-                path.move(to: track.points[0])
-                track.points.dropFirst().forEach(path.addLine(to:))
-                trail.strokeColor = tintColor.withAlphaComponent(0.45).cgColor
-                trail.path = path.cgPath
+                if track.onSpace {
+                    trail.path = nil
+                } else {
+                    let path = UIBezierPath()
+                    path.move(to: track.points[track.wordStart])
+                    track.points[(track.wordStart + 1)...].forEach(path.addLine(to:))
+                    trail.strokeColor = tintColor.withAlphaComponent(0.45).cgColor
+                    trail.path = path.cgPath
+                }
             }
         }
     }
 
     override func touchesEnded(_ touches: Set<UITouch>, with event: UIEvent?) {
-        let unit = (bounds.width - 2 * margin) / 10
-        let rowHeight = bounds.height / CGFloat(max(rows.count, 1))
         for touch in touches {
             guard let track = tracks.removeValue(forKey: touch) else { continue }
             track.button.isHighlighted = false
@@ -415,20 +436,40 @@ final class KeyboardView: UIView {
                 continue
             }
             trail.path = nil
-            let origin = track.points[0]
-            let reach = track.points.map { hypot($0.x - origin.x, $0.y - origin.y) }.max() ?? 0
-            let detail = String(format: "%.1f keys in %d ms", reach / unit, Int((touch.timestamp - track.start) * 1000))
-            if reach < unit * swipeReach {
-                // Too short to be a word: a tap that slid, typed where it landed.
-                note("short swipe typed as a tap: \(detail)")
-                onKey?(track.button.key)
-            } else {
-                if reach < unit * 2 {
-                    note("short swipe kept: \(detail)")
-                }
-                onSwipe?(track.points.map { CGPoint(x: ($0.x - margin) / unit, y: $0.y / rowHeight) })
+            spaceBar?.isHighlighted = false
+            // A swipe that ends on the space bar already put its last word in.
+            if !track.onSpace {
+                finishWord(of: track, endingOnSpace: false)
             }
         }
+    }
+
+    private var spaceBar: KeyButton? {
+        rows.joined().first { $0.key == .space }
+    }
+
+    /// Reports the word `track` has swiped since it began or last left the
+    /// space bar, typed as a tap if the finger hardly moved.
+    private func finishWord(of track: Track, endingOnSpace: Bool) {
+        let unit = (bounds.width - 2 * margin) / 10
+        let rowHeight = bounds.height / CGFloat(max(rows.count, 1))
+        let word = track.points[track.wordStart...]
+        let fromSpace = track.wordStart > 0
+        let origin = track.points[track.wordStart]
+        let reach = word.map { hypot($0.x - origin.x, $0.y - origin.y) }.max() ?? 0
+        let elapsed = ProcessInfo.processInfo.systemUptime - track.start
+        let detail = String(format: "%.1f keys in %d ms", reach / unit, Int(elapsed * 1000))
+        // Running to or from the space bar always makes a word: it may be "a" or "I".
+        if reach < unit * swipeReach, !fromSpace, !endingOnSpace {
+            // Too short to be a word: a tap that slid, typed where it landed.
+            note("short swipe typed as a tap: \(detail)")
+            onKey?(track.button.key)
+            return
+        }
+        if reach < unit * 2 {
+            note("short swipe kept: \(detail)")
+        }
+        onSwipe?(word.map { CGPoint(x: ($0.x - margin) / unit, y: $0.y / rowHeight) }, fromSpace, endingOnSpace)
     }
 
     override func touchesCancelled(_ touches: Set<UITouch>, with event: UIEvent?) {
@@ -437,6 +478,7 @@ final class KeyboardView: UIView {
         }
         note("touch cancelled by the system")
         trail.path = nil
+        spaceBar?.isHighlighted = false
     }
 
     // MARK: Other keys

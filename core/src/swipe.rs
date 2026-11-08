@@ -49,6 +49,15 @@ const TURNAROUND_REACH: f32 = 0.65;
 /// "facilities", isn't let off every corner it has.
 const TURNAROUND_WEIGHT: f32 = 1.5;
 
+/// Whether a swipe came up off the space bar from the word before, or ran
+/// down onto it to go on to the next, so that its path starts or ends there
+/// rather than on a letter.
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub struct Through {
+    pub from_space: bool,
+    pub to_space: bool,
+}
+
 /// One word a swipe may be read as.
 #[derive(Clone, Debug, PartialEq)]
 pub struct Reading {
@@ -160,6 +169,7 @@ fn turned_early(keys: &[Point]) -> Option<(Vec<Point>, usize)> {
 /// well they explain `path` and returns the best `limit` spellings.
 pub fn decode<'a>(
     path: &[Point],
+    through: Through,
     lexicon: impl Iterator<Item = (&'a str, &'a str, f32)>,
     limit: usize,
 ) -> Vec<Reading> {
@@ -170,8 +180,18 @@ pub fn decode<'a>(
     let mut keys = Vec::with_capacity(32);
     let mut scored: Vec<(f32, f32, &str)> = Vec::new();
     for (lower, spelling, logp) in lexicon {
-        if lower.len() < 2 || ideal(lower, &mut keys).is_none() {
+        // A swipe can't tell a one-letter word from a tap, unless it ran to or from the space bar.
+        let single = through.from_space || through.to_space;
+        if (lower.len() < 2 && !single) || ideal(lower, &mut keys).is_none() {
             continue;
+        }
+        // The finger travels between the word and the space bar in a straight
+        // line from its first letter or to its last, which the ideal path takes too.
+        if through.from_space {
+            keys.insert(0, start);
+        }
+        if through.to_space {
+            keys.push(end);
         }
         let ends = (distance(keys[0], start), distance(keys[keys.len() - 1], end));
         if ends.0 > ENDPOINT_SLACK || ends.1 > ENDPOINT_SLACK {
@@ -387,6 +407,28 @@ mod tests {
             keys[1] = (mid.0 + (keys[1].0 - mid.0) * 0.6, mid.1 + (keys[1].1 - mid.1) * 0.6);
             assert_eq!(engine.swipe(before, &trace_through(&keys, 0.1), 1), [word], "{before}{word}");
         }
+    }
+
+    #[test]
+    fn words_swiped_through_the_space_bar() {
+        let engine = Engine::new();
+        // Where a finger crosses onto the space bar, along the top of the bottom row.
+        let space = |x: f32| (x, 3.05);
+        let mut keys = Vec::new();
+        let mut through = |word: &str, from: Option<f32>, to: Option<f32>| -> Vec<String> {
+            ideal(word, &mut keys).unwrap();
+            let route: Vec<Point> = from.map(space).into_iter().chain(keys.iter().copied()).chain(to.map(space)).collect();
+            let spaces = Through { from_space: from.is_some(), to_space: to.is_some() };
+            engine.swipe_through("", &trace_through(&route, 0.1), spaces, 3).into_iter().map(|r| r.word).collect()
+        };
+        // Turning down to the space bar from the last letter, or carrying straight on past it.
+        assert_eq!(through("the", None, Some(4.5))[0], "the");
+        assert_eq!(through("action", None, Some(6.6))[0], "action");
+        assert_eq!(through("dog", Some(5.0), Some(5.0))[0], "dog");
+        assert_eq!(through("into", Some(6.0), None)[0], "into");
+        // A one-letter word is a swipe up to its key and back.
+        assert_eq!(through("i", Some(6.0), Some(6.5))[0], "I");
+        assert_eq!(through("a", Some(4.5), Some(4.5))[0], "a");
     }
 
     /// Swipes recorded on a phone, one per line: the word meant, then the

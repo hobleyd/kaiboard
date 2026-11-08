@@ -4,7 +4,7 @@
 use crate::context::{self, is_apostrophe, Context};
 use crate::dict::Dict;
 use crate::distance::{adjacent, typo_cost};
-use crate::swipe::Reading;
+use crate::swipe::{Reading, Through};
 use std::collections::HashMap;
 
 /// Apostrophe-less spellings that are almost always meant as contractions.
@@ -359,6 +359,11 @@ impl Engine {
 
     /// As `swipe`, with how well each word fits.
     pub fn swipe_readings(&self, before: &str, path: &[(f32, f32)], limit: usize) -> Vec<Reading> {
+        self.swipe_through(before, path, Through::default(), limit)
+    }
+
+    /// As `swipe_readings`, for a swipe that runs from or to the space bar.
+    pub fn swipe_through(&self, before: &str, path: &[(f32, f32)], through: Through, limit: usize) -> Vec<Reading> {
         let ctx = context::parse(before);
         // A swipe starts a new word, so whatever is at the cursor precedes it.
         let prev = if ctx.current.is_empty() { ctx.prev_word } else { Some(ctx.current) }.map(normalize);
@@ -377,7 +382,7 @@ impl Engine {
             .chain(learned)
             .chain(contractions)
             .map(|(lower, word, logp)| (lower, word, logp + boosts.get(lower).copied().unwrap_or(0.0)));
-        let mut scored = crate::swipe::decode(path, lexicon, limit);
+        let mut scored = crate::swipe::decode(path, through, lexicon, limit);
         // The letter keys have no apostrophe, so contractions are swiped without one.
         let mut extra = Vec::new();
         for reading in &mut scored {
