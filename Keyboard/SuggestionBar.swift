@@ -59,6 +59,11 @@ final class SuggestionBar: UIView {
         credentials.setContentCompressionResistancePriority(.required, for: .horizontal)
 
         scroll.showsHorizontalScrollIndicator = false
+        // Liquid Glass blurs content scrolling under a scroll view's edges. On a
+        // strip this thin the top and bottom blurs meet and cover every word.
+        for effect in [scroll.topEdgeEffect, scroll.bottomEdgeEffect, scroll.leftEdgeEffect, scroll.rightEdgeEffect] {
+            effect.isHidden = true
+        }
         // The bar scrolls itself, from a pan anywhere on it in any direction.
         // The scroll view's own recogniser has to guess whether a touch is a
         // tap on a suggestion or a sideways drag, and on a strip this thin it
