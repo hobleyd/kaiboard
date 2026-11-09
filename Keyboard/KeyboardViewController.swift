@@ -76,6 +76,8 @@ final class KeyboardViewController: UIInputViewController {
     private static let selectionOptions = 12
     private var selection: Selection?
     private var selectionTask: Task<Void, Never>?
+    /// Where learned words are saved; set when they are first loaded.
+    private var store: URL?
     /// How many readings of a swipe Apple Intelligence gets to choose between.
     private static let swipeCandidates = 8
     /// How long after a swipe to wait before asking for next-word suggestions:
@@ -158,11 +160,17 @@ final class KeyboardViewController: UIInputViewController {
             return text
         }
         suggester.onUpdate = { [weak self] in self?.render() }
-        suggester.engine.load()
     }
 
     override func viewWillAppear(_ animated: Bool) {
         super.viewWillAppear(animated)
+        if store == nil {
+            loadLearned()
+        }
+        if hasFullAccess {
+            suggester.engine.applyForgetting()
+            suggester.invalidate()
+        }
         suggester.predictor.prewarm()
         keys.showsGlobe = needsInputModeSwitchKey
         fieldSetup = nil
@@ -173,7 +181,30 @@ final class KeyboardViewController: UIInputViewController {
 
     override func viewWillDisappear(_ animated: Bool) {
         super.viewWillDisappear(animated)
-        suggester.engine.save()
+        if hasFullAccess {
+            suggester.engine.applyForgetting()
+        }
+        suggester.engine.save(to: store)
+    }
+
+    /// Loads learned words from the container shared with the app if the
+    /// keyboard has Full Access, so they can be reviewed there, or else from its own.
+    private func loadLearned() {
+        let engine = suggester.engine
+        guard hasFullAccess, let shared = TextEngine.Store.shared else {
+            store = TextEngine.Store.local
+            engine.load(from: store)
+            return
+        }
+        store = shared
+        engine.load(from: shared)
+        // Words learned before Full Access was allowed move to the shared container.
+        if let local = TextEngine.Store.local, FileManager.default.fileExists(atPath: local.path) {
+            engine.load(from: local)
+            engine.applyForgetting()
+            engine.save(to: shared)
+            try? FileManager.default.removeItem(at: local)
+        }
     }
 
     override func viewWillLayoutSubviews() {
@@ -302,6 +333,13 @@ final class KeyboardViewController: UIInputViewController {
         }
     }
 
+    /// Records that the user changed `from` into `to`, so `to` is offered first next time.
+    private func learnFix(from: String, to: String) {
+        if learns {
+            suggester.engine.learnFix(from: from, to: to)
+        }
+    }
+
     private var returnTitle: String {
         switch textDocumentProxy.returnKeyType ?? .default {
         case .go: "go"
@@ -381,8 +419,11 @@ final class KeyboardViewController: UIInputViewController {
 
         selectionTask?.cancel()
         let siblings = (swipeReadings[word.lowercased()] ?? []).filter { $0.lowercased() != word.lowercased() }
+        // Words the user has changed this one into before lead.
+        let preferred = engine.preferred(for: word)
         // Words the selection could be a slip for: other readings of the swipe that produced it, then near spellings.
-        let near = engine.replacements(for: word, from: siblings + engine.neighbours(of: word, limit: 6), limit: 8)
+        let near = engine.replacements(
+            for: word, from: preferred + siblings + engine.neighbours(of: word, limit: 6), limit: 8 + preferred.count)
         selection = Selection(word: word, before: before, after: after, options: near, isThinking: predictor.isAvailable)
         guard predictor.isAvailable else { return }
 
@@ -391,7 +432,7 @@ final class KeyboardViewController: UIInputViewController {
             guard !Task.isCancelled, let self, self.selection?.word == word else { return }
             var options = engine.replacements(for: word, from: filled ?? [])
             self.selection?.fromAI.formUnion(options.map { $0.lowercased() })
-            self.selection?.options = engine.replacements(for: word, from: options + near, limit: Self.selectionOptions)
+            self.selection?.options = engine.replacements(for: word, from: preferred + options + near, limit: Self.selectionOptions)
             self.render()
 
             // Give one slot to whichever near-miss fits the sentence best.
@@ -401,7 +442,7 @@ final class KeyboardViewController: UIInputViewController {
                 options.insert(pick, at: min(1, options.count))
                 self.selection?.fromAI.insert(pick.lowercased())
             }
-            self.selection?.options = engine.replacements(for: word, from: options + near, limit: Self.selectionOptions)
+            self.selection?.options = engine.replacements(for: word, from: preferred + options + near, limit: Self.selectionOptions)
             self.selection?.isThinking = false
             self.render()
         }
@@ -636,6 +677,7 @@ final class KeyboardViewController: UIInputViewController {
                 // Take back the auto-correction and remember the word is intentional.
                 replace(pendingUndo.corrected + pendingUndo.trailing, with: pendingUndo.original + pendingUndo.trailing)
                 learnWord(pendingUndo.original)
+                suggester.engine.forgetFix(from: pendingUndo.original, to: pendingUndo.corrected)
             } else if let pendingSwipe, before.hasSuffix(pendingSwipe.text) {
                 // One backspace takes back a whole swiped word.
                 replace(pendingSwipe.text, with: "")
@@ -750,10 +792,16 @@ final class KeyboardViewController: UIInputViewController {
         UIDevice.current.playInputClick()
         undo = nil
         swipeChoice?.cancel()
+        let pendingSwipe = swiped
         swiped = nil
         lastKeyWasSpace = false
         switch suggestion.kind {
         case .fix:
+            if let selection {
+                learnFix(from: selection.word, to: suggestion.text)
+            } else if let pendingSwipe, suggestion.replace == pendingSwipe.text {
+                learnFix(from: pendingSwipe.text.trimmingCharacters(in: .whitespaces), to: suggestion.text)
+            }
             replace(suggestion.replace, with: suggestion.insert)
             spaceIsAutomatic = suggestion.insert.hasSuffix(" ")
         case .verbatim:

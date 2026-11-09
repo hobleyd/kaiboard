@@ -57,11 +57,15 @@ const AUTOCORRECT_MIN_LOGP: f32 = -13.5;
 /// How far below the best completion a respelling may score and still be auto-applied.
 const AUTOCORRECT_MARGIN: f32 = 2.0;
 const LEARNED_AFTER: u32 = 2;
+/// A real word the user has changed to the same other word this many times
+/// is auto-corrected to it.
+const FIX_AUTO_AFTER: u32 = 3;
 const MAX_WORD_CHARS: usize = 24;
 const MAX_USER_ENTRIES: usize = 4000;
 
 const SCORE_CERTAIN: f32 = 200.0;
 const SCORE_AI: f32 = 100.0;
+const SCORE_LEARNED_FIX: f32 = 150.0;
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum Mode {
@@ -140,6 +144,15 @@ pub struct Engine {
     user_words: HashMap<String, UserWord>,
     /// previous word -> following word -> times typed, all lowercase.
     user_bigrams: HashMap<String, HashMap<String, u32>>,
+    /// word entered -> word the user changed it to -> times, all lowercase.
+    user_fixes: HashMap<String, HashMap<String, u32>>,
+}
+
+/// A word the user keeps changing into another.
+pub struct LearnedFix {
+    pub from: String,
+    pub to: String,
+    pub count: u32,
 }
 
 struct Candidate {
@@ -272,6 +285,12 @@ fn clean(raw: &str) -> Option<String> {
     (plain && (1..=MAX_WORD_CHARS).contains(&len)).then(|| token.replace('\u{2019}', "'"))
 }
 
+/// Score, in nats, by which a word the user has changed into another `count`
+/// times is moved behind it.
+fn fix_weight(count: u32) -> f32 {
+    2.0 * (1.0 + count as f32).ln()
+}
+
 fn learnable(lower: &str) -> bool {
     let len = lower.chars().count();
     (1..=MAX_WORD_CHARS).contains(&len) && lower.chars().all(|c| c.is_alphabetic() || c == '\'')
@@ -285,7 +304,7 @@ impl Default for Engine {
 
 impl Engine {
     pub fn new() -> Engine {
-        Engine { dict: Dict::get(), user_words: HashMap::new(), user_bigrams: HashMap::new() }
+        Engine { dict: Dict::get(), user_words: HashMap::new(), user_bigrams: HashMap::new(), user_fixes: HashMap::new() }
     }
 
     fn builtin_known(&self, lower: &str) -> bool {
@@ -409,6 +428,21 @@ impl Engine {
             for reading in scored.iter_mut().skip(1) {
                 if blocked(&normalize(&reading.word)) {
                     reading.score = reading.score.min(best - crate::swipe::CONTENDER_MARGIN - 0.1);
+                }
+            }
+        }
+        // A reading the user keeps changing into another one gives way to it.
+        let lowers: Vec<String> = scored.iter().map(|r| normalize(&r.word)).collect();
+        for (i, from) in lowers.iter().enumerate() {
+            let Some(targets) = self.user_fixes.get(from) else { continue };
+            for (j, to) in lowers.iter().enumerate() {
+                if let Some(&count) = targets.get(to) {
+                    scored[j].score += fix_weight(count);
+                    scored[i].score -= fix_weight(count);
+                    // Settled: out of contention, so Apple Intelligence can't swap it back.
+                    if count >= FIX_AUTO_AFTER {
+                        scored[i].score = scored[i].score.min(scored[j].score - crate::swipe::CONTENDER_MARGIN - 0.1);
+                    }
                 }
             }
         }
@@ -544,6 +578,18 @@ impl Engine {
                         .then_some(score),
                 });
             }
+        }
+
+        for (to, count) in self.preferred_for(&lower) {
+            let score = SCORE_LEARNED_FIX + fix_weight(count);
+            let trusted = !blocked(&to) && (count >= FIX_AUTO_AFTER || (!known && self.is_known(&to)));
+            pool.add(&to, Candidate {
+                spelling: self.spelling(&to),
+                score,
+                kind: Kind::Correction,
+                ai: false,
+                auto: trusted.then_some(score),
+            });
         }
 
         for (rank, raw) in ai.map_or(&[][..], |ai| &ai.words).iter().enumerate() {
@@ -736,9 +782,91 @@ impl Engine {
         entry.spelling = word.replace('\u{2019}', "'");
     }
 
+    /// Records that the user changed `from` into `to`.
+    pub fn learn_fix(&mut self, from: &str, to: &str) {
+        let (from, to) = (normalize(from), normalize(to));
+        if from == to || !learnable(&from) || !learnable(&to) {
+            return;
+        }
+        *self.user_fixes.entry(from).or_default().entry(to).or_insert(0) += 1;
+        self.prune();
+    }
+
+    /// Forgets that the user changed `from` into `to`, e.g. after they took
+    /// back an auto-correction it made.
+    pub fn forget_fix(&mut self, from: &str, to: &str) {
+        let from = normalize(from);
+        if let Some(targets) = self.user_fixes.get_mut(&from) {
+            targets.remove(&normalize(to));
+            if targets.is_empty() {
+                self.user_fixes.remove(&from);
+            }
+        }
+    }
+
+    /// Words the user has changed `lower` into, most often first.
+    fn preferred_for(&self, lower: &str) -> Vec<(String, u32)> {
+        let mut targets: Vec<(String, u32)> =
+            self.user_fixes.get(lower).into_iter().flatten().map(|(to, &count)| (to.clone(), count)).collect();
+        targets.sort_by(|a, b| b.1.cmp(&a.1).then_with(|| a.0.cmp(&b.0)));
+        targets
+    }
+
+    /// Words the user has changed `word` into, most often first.
+    pub fn preferred(&self, word: &str) -> Vec<String> {
+        self.preferred_for(&normalize(word)).into_iter().map(|(to, _)| self.spelling(&to)).collect()
+    }
+
+    /// Forgets everything learned about `word`: that it is a word, what it
+    /// follows and is followed by, and what it was changed into or from.
+    pub fn forget(&mut self, word: &str) {
+        let lower = normalize(word);
+        self.user_words.remove(&lower);
+        self.user_bigrams.remove(&lower);
+        self.user_bigrams.retain(|_, next| {
+            next.remove(&lower);
+            !next.is_empty()
+        });
+        self.user_fixes.remove(&lower);
+        self.user_fixes.retain(|_, targets| {
+            targets.remove(&lower);
+            !targets.is_empty()
+        });
+    }
+
+    /// Words learned from the user that are treated as correctly spelled, in
+    /// alphabetical order.
+    pub fn learned_words(&self) -> Vec<String> {
+        let mut words: Vec<(&String, &UserWord)> =
+            self.user_words.iter().filter(|(_, word)| word.count >= LEARNED_AFTER).collect();
+        words.sort_by(|a, b| a.0.cmp(b.0));
+        words.into_iter().map(|(_, word)| word.spelling.clone()).collect()
+    }
+
+    /// Words the user keeps changing into others, alphabetically by the word changed.
+    pub fn learned_fixes(&self) -> Vec<LearnedFix> {
+        let mut fixes: Vec<LearnedFix> = self
+            .user_fixes
+            .iter()
+            .flat_map(|(from, targets)| {
+                targets.iter().map(|(to, &count)| LearnedFix { from: self.spelling(from), to: self.spelling(to), count })
+            })
+            .collect();
+        fixes.sort_by(|a, b| {
+            (normalize(&a.from), normalize(&a.to)).cmp(&(normalize(&b.from), normalize(&b.to)))
+        });
+        fixes
+    }
+
     fn prune(&mut self) {
         if self.user_words.len() > MAX_USER_ENTRIES {
             self.user_words.retain(|_, word| word.count > 1);
+        }
+        if self.user_fixes.len() > MAX_USER_ENTRIES {
+            self.user_fixes.retain(|_, targets| {
+                targets.retain(|_, count| *count > 1);
+                !targets.is_empty()
+            });
         }
         if self.user_bigrams.len() > MAX_USER_ENTRIES {
             self.user_bigrams.retain(|_, next| {
@@ -759,23 +887,41 @@ impl Engine {
                 lines.push(format!("B\t{prev}\t{word}\t{count}"));
             }
         }
+        for (from, targets) in &self.user_fixes {
+            for (to, count) in targets {
+                lines.push(format!("F\t{from}\t{to}\t{count}"));
+            }
+        }
         lines.sort();
         lines.join("\n")
     }
 
-    /// Merges records produced by `export`.
+    /// Merges records produced by `export`, keeping the higher count where both have one.
     pub fn import(&mut self, data: &str) {
         for line in data.lines() {
             let fields: Vec<&str> = line.split('\t').collect();
             match fields[..] {
                 ["W", spelling, count] => {
-                    if let (true, Ok(count)) = (learnable(&normalize(spelling)), count.parse()) {
-                        self.user_words.insert(normalize(spelling), UserWord { spelling: spelling.to_string(), count });
+                    if let (true, Ok(count)) = (learnable(&normalize(spelling)), count.parse::<u32>()) {
+                        let word = self
+                            .user_words
+                            .entry(normalize(spelling))
+                            .or_insert(UserWord { spelling: spelling.to_string(), count: 0 });
+                        if count >= word.count {
+                            *word = UserWord { spelling: spelling.to_string(), count };
+                        }
                     }
                 }
                 ["B", prev, word, count] => {
-                    if let (true, true, Ok(count)) = (learnable(prev), learnable(word), count.parse()) {
-                        self.user_bigrams.entry(prev.to_string()).or_default().insert(word.to_string(), count);
+                    if let (true, true, Ok(count)) = (learnable(prev), learnable(word), count.parse::<u32>()) {
+                        let seen = self.user_bigrams.entry(prev.to_string()).or_default().entry(word.to_string()).or_insert(0);
+                        *seen = (*seen).max(count);
+                    }
+                }
+                ["F", from, to, count] => {
+                    if let (true, true, Ok(count)) = (learnable(from), learnable(to), count.parse::<u32>()) {
+                        let seen = self.user_fixes.entry(from.to_string()).or_default().entry(to.to_string()).or_insert(0);
+                        *seen = (*seen).max(count);
                     }
                 }
                 _ => {}
@@ -1009,10 +1155,67 @@ mod tests {
     }
 
     #[test]
+    fn forgets_a_learned_word_entirely() {
+        let mut e = Engine::new();
+        e.learn("try Kaiboard ");
+        e.learn("try Kaiboard ");
+        e.learn("Kaiboard rocks ");
+        e.learn_fix("kaiboard", "keyboard");
+        assert_eq!(e.learned_words(), ["Kaiboard"]);
+        e.forget("kaiboard");
+        assert!(e.learned_words().is_empty());
+        assert!(e.learned_fixes().is_empty());
+        assert_eq!(e.suggest("try kaiboard", None, 3).suggestions[0].kind, Kind::Verbatim);
+        assert!(!texts(&e.suggest("try ", None, 8)).contains(&"Kaiboard"));
+        assert!(!e.export().contains("kaiboard"), "{}", e.export());
+    }
+
+    #[test]
+    fn learned_fixes_lead_and_then_apply() {
+        let mut e = Engine::new();
+        assert_eq!(auto(&e.suggest("over their", None, 3)), None);
+        e.learn_fix("their", "there");
+        let out = e.suggest("over their", None, 3);
+        assert_eq!(texts(&out)[0], "there", "{:?}", texts(&out));
+        assert_eq!(auto(&out), None);
+        e.learn_fix("Their", "There");
+        e.learn_fix("their", "there");
+        let out = e.suggest("over Their", None, 3);
+        assert_eq!(auto(&out), Some("There"), "{:?}", texts(&out));
+        assert_eq!(e.preferred("their"), ["there"]);
+
+        let mut restored = Engine::new();
+        restored.import(&e.export());
+        assert_eq!(restored.export(), e.export());
+        assert_eq!(restored.learned_fixes().len(), 1);
+
+        e.forget_fix("their", "there");
+        assert_eq!(auto(&e.suggest("over their", None, 3)), None);
+        assert!(e.learned_fixes().is_empty());
+    }
+
+    #[test]
+    fn import_keeps_the_higher_count() {
+        let mut e = Engine::new();
+        e.import("W\tKaiboard\t5\nB\tmy\tkaiboard\t4");
+        e.import("W\tkaiboard\t1\nB\tmy\tkaiboard\t1");
+        assert_eq!(e.export(), "B\tmy\tkaiboard\t4\nW\tKaiboard\t5");
+    }
+
+    #[test]
     fn rejected_autocorrection_sticks() {
         let mut e = Engine::new();
         assert!(auto(&e.suggest("helo", None, 3)).is_some());
         e.learn_word("helo");
         assert_eq!(auto(&e.suggest("helo", None, 3)), None);
+    }
+}
+
+#[cfg(test)]
+mod probe_tmp {
+    #[test]
+    fn probe_his() {
+        let e = super::Engine::new();
+        eprintln!("NEIGHBOURS {:?}", e.neighbours("his", 6));
     }
 }

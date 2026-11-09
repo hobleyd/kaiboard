@@ -42,6 +42,12 @@ targets:
           CODE_SIGN_STYLE: Manual
           CODE_SIGN_IDENTITY: Apple Distribution
           PROVISIONING_PROFILE_SPECIFIER: kAIboard App Store
+    # Shared with the keyboard so the app can show the words it has learned.
+    entitlements:
+      path: App/kAIboard.entitlements
+      properties:
+        com.apple.security.application-groups:
+          - group.au.com.sharpblue.kaiboard
     info:
       path: App/Info.plist
       properties:
@@ -71,6 +77,11 @@ targets:
           CODE_SIGN_STYLE: Manual
           CODE_SIGN_IDENTITY: Apple Distribution
           PROVISIONING_PROFILE_SPECIFIER: kAIboard Keyboard App Store
+    entitlements:
+      path: Keyboard/kAIboardKeyboard.entitlements
+      properties:
+        com.apple.security.application-groups:
+          - group.au.com.sharpblue.kaiboard
     info:
       path: Keyboard/Info.plist
       properties:
@@ -84,6 +95,8 @@ targets:
             IsASCIICapable: false
             PrefersRightToLeft: false
             PrimaryLanguage: en-US
-            # Everything runs on the device, so the keyboard never needs
-            # network or shared-container access.
-            RequestsOpenAccess: false
+            # Everything runs on the device and nothing goes over the network.
+            # Full Access is asked for only so the keyboard can write learned
+            # words to the container it shares with the app, for review
+            # there; without it, it keeps them to itself.
+            RequestsOpenAccess: true

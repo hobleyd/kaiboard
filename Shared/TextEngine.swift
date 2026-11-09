@@ -106,22 +106,104 @@ final class TextEngine {
         kb_learn_word(handle, word)
     }
 
-    // MARK: Persistence
-
-    private static var storeURL: URL? {
-        FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first?
-            .appendingPathComponent("learned.tsv")
+    /// Records that the user changed `from` into `to`.
+    func learnFix(from: String, to: String) {
+        kb_learn_fix(handle, from, to)
     }
 
-    func load() {
-        guard let url = Self.storeURL, let text = try? String(contentsOf: url, encoding: .utf8) else { return }
+    /// Forgets that the user changed `from` into `to`.
+    func forgetFix(from: String, to: String) {
+        kb_forget_fix(handle, from, to)
+    }
+
+    /// Words the user has changed `word` into, most often first.
+    func preferred(for word: String) -> [String] {
+        Self.words(kb_preferred(handle, word))
+    }
+
+    // MARK: Dictionary
+
+    struct Fix: Decodable, Hashable {
+        let from: String
+        let to: String
+        let count: Int
+    }
+
+    /// Words learned from the user that are treated as correctly spelled.
+    var learnedWords: [String] {
+        Self.words(kb_learned_words(handle))
+    }
+
+    /// Words the user keeps changing into others.
+    var learnedFixes: [Fix] {
+        guard let raw = kb_learned_fixes(handle) else { return [] }
+        defer { kb_string_free(raw) }
+        let data = Data(bytesNoCopy: raw, count: strlen(raw), deallocator: .none)
+        return (try? JSONDecoder().decode([Fix].self, from: data)) ?? []
+    }
+
+    /// Forgets everything learned about `word`.
+    func forget(_ word: String) {
+        kb_forget(handle, word)
+    }
+
+    // MARK: Persistence
+
+    /// Where learned words are kept. The keyboard can only write to the
+    /// container it shares with the app when it has Full Access; without it,
+    /// it keeps them in its own.
+    enum Store {
+        static let group = "group.au.com.sharpblue.kaiboard"
+
+        static var shared: URL? {
+            FileManager.default.containerURL(forSecurityApplicationGroupIdentifier: group)?
+                .appendingPathComponent("learned.tsv")
+        }
+
+        static var local: URL? {
+            FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first?
+                .appendingPathComponent("learned.tsv")
+        }
+
+        /// Words deleted in the app, one record per line ("W\tword" or
+        /// "F\tfrom\tto"), for a running keyboard to forget too: it would
+        /// otherwise write them back from memory the next time it saves.
+        static var forgotten: URL? {
+            FileManager.default.containerURL(forSecurityApplicationGroupIdentifier: group)?
+                .appendingPathComponent("forgotten.tsv")
+        }
+    }
+
+    func load(from url: URL?) {
+        guard let url, let text = try? String(contentsOf: url, encoding: .utf8) else { return }
         kb_import(handle, text)
     }
 
-    func save() {
-        guard let url = Self.storeURL, let raw = kb_export(handle) else { return }
+    func save(to url: URL?) {
+        guard let url, let raw = kb_export(handle) else { return }
         defer { kb_string_free(raw) }
         try? FileManager.default.createDirectory(at: url.deletingLastPathComponent(), withIntermediateDirectories: true)
         try? String(cString: raw).write(to: url, atomically: true, encoding: .utf8)
+    }
+
+    /// Asks a running keyboard to forget `records` (see `Store.forgotten`).
+    static func queueForgetting(_ records: [String]) {
+        guard let url = Store.forgotten, !records.isEmpty else { return }
+        let earlier = (try? String(contentsOf: url, encoding: .utf8)) ?? ""
+        try? (earlier + records.map { $0 + "\n" }.joined()).write(to: url, atomically: true, encoding: .utf8)
+    }
+
+    /// Forgets whatever the app has deleted since this was last called.
+    func applyForgetting() {
+        guard let url = Store.forgotten, let text = try? String(contentsOf: url, encoding: .utf8) else { return }
+        try? FileManager.default.removeItem(at: url)
+        for line in text.split(separator: "\n") {
+            let fields = line.split(separator: "\t", omittingEmptySubsequences: false).map(String.init)
+            switch fields.first {
+            case "W" where fields.count == 2: forget(fields[1])
+            case "F" where fields.count == 3: forgetFix(from: fields[1], to: fields[2])
+            default: break
+            }
+        }
     }
 }

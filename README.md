@@ -14,10 +14,35 @@ last few letters.
   above it to find one by name.
 - **Fix a word after the fact.** Select a word and the bar offers replacements
   chosen from the text on both sides of it. *Review* asks for more.
-- **Private.** Nothing leaves the phone and the keyboard does not ask for Full
-  Access.
+- **Learns your words.** Words it doesn't know stop being corrected once you've
+  typed them twice, and a word you keep changing into another is offered, then
+  applied, in its place. *Review Dictionary* in the app lists both so you can
+  delete any.
+- **Private.** Nothing leaves the phone. See [Full Access](#full-access) for
+  the one thing the keyboard asks it for.
 
 Requires an iPhone with Apple Intelligence (iOS 26 or later).
+
+## Full Access
+
+The keyboard asks for Full Access for one reason only: so it can save the
+words it learns to the App Group container (`group.au.com.sharpblue.kaiboard`)
+that it shares with the kAIboard app, where *Review Dictionary* reads them.
+iOS lets a keyboard write to a shared container only when it has Full Access;
+without it, the keyboard has only its own private storage, which the app can't
+see.
+
+Nothing else in the keyboard needs Full Access. It makes no network requests,
+doesn't read or write the pasteboard, and uses no other service that Full
+Access unlocks. Suggestions, swipe typing, Apple Intelligence and emoji all
+work the same without it. The only place the keyboard checks `hasFullAccess`
+is where it decides which container to keep learned words in.
+
+Leave Full Access off and the keyboard keeps learning, but stores the words
+privately, so *Review Dictionary* in the app stays empty. The first time it
+runs with Full Access on, it moves what it has already learned into the
+shared container. If you turn Full Access off again later, it starts again
+with an empty private dictionary.
 
 ## Layout
 
@@ -26,7 +51,7 @@ Requires an iPhone with Apple Intelligence (iOS 26 or later).
 | `core/` | Rust static library: context parsing, typo-aware spelling candidates, swipe decoding, and ranking of the model's answers. |
 | `Keyboard/` | The keyboard extension: keys, suggestion bar, editing behaviour. |
 | `Shared/` | Swift bridge to the Rust engine and to the language model. |
-| `App/` | Container app with setup steps and a playground. |
+| `App/` | Container app with setup steps, a playground, and the learned-word dictionary. |
 | `tools/` | Scripts that regenerate the dictionary and the app icon. |
 
 ## Building
@@ -54,8 +79,8 @@ number is the workflow run number. The upload needs these repository secrets:
 |---|---|
 | `IOS_DIST_CERT_P12` | Apple Distribution certificate and key, as base64 of the `.p12` |
 | `IOS_DIST_CERT_PASSWORD` | Password of that `.p12` |
-| `IOS_PROVISIONING_PROFILE_B64` | App Store profile named `kAIboard App Store` for `au.com.sharpblue.kaiboard`, base64 |
-| `IOS_KEYBOARD_PROVISIONING_PROFILE_B64` | App Store profile named `kAIboard Keyboard App Store` for `au.com.sharpblue.kaiboard.keyboard`, base64 |
+| `IOS_PROVISIONING_PROFILE_B64` | App Store profile named `kAIboard App Store` for `au.com.sharpblue.kaiboard`, with the `group.au.com.sharpblue.kaiboard` App Group, base64 |
+| `IOS_KEYBOARD_PROVISIONING_PROFILE_B64` | App Store profile named `kAIboard Keyboard App Store` for `au.com.sharpblue.kaiboard.keyboard`, with the same App Group, base64 |
 | `ASC_KEY_ID`, `ASC_ISSUER_ID`, `ASC_KEY_P8` | App Store Connect API key used for the upload |
 
 All of them are pushed from the `../ansible` repo, which vaults the

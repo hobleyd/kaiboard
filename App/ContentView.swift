@@ -64,6 +64,12 @@ struct ContentView: View {
                     Text("These are the suggestions kAIboard would show for this text. A sparkle marks ones chosen by Apple Intelligence from the context; bold is what auto-correct would apply.")
                 }
 
+                Section {
+                    NavigationLink("Review Dictionary") {
+                        DictionaryView()
+                    }
+                }
+
                 Section("Apple Intelligence") {
                     HStack {
                         Text(playground.status)
@@ -74,7 +80,7 @@ struct ContentView: View {
                 }
 
                 Section {
-                    Text("kAIboard works entirely on this iPhone. It doesn't ask for Full Access and sends nothing over the network. Words you type often are remembered on the device so they stop being corrected.")
+                    Text("kAIboard works entirely on this iPhone and sends nothing over the network. Words you type often are remembered on the device so they stop being corrected. Full Access is used only to share those words with this app so you can review them.")
                         .font(.footnote)
                         .foregroundStyle(.secondary)
                 }

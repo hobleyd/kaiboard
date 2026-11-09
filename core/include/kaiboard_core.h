@@ -46,6 +46,23 @@ char *kb_replacements(const KBEngine *engine, const char *selected, const char *
 void kb_learn(KBEngine *engine, const char *before);
 // Marks a word as correctly spelled.
 void kb_learn_word(KBEngine *engine, const char *word);
+// Records that the user changed the word `from` into `to`, so `to` is
+// preferred where `from` would be offered.
+void kb_learn_fix(KBEngine *engine, const char *from, const char *to);
+// Forgets that the user changed `from` into `to`.
+void kb_forget_fix(KBEngine *engine, const char *from, const char *to);
+// JSON array of the words the user has changed `word` into, most often first.
+// Release with kb_string_free.
+char *kb_preferred(const KBEngine *engine, const char *word);
+
+// Forgets everything learned about `word`.
+void kb_forget(KBEngine *engine, const char *word);
+// JSON array of the words learned from the user that are treated as correctly
+// spelled, alphabetically. Release with kb_string_free.
+char *kb_learned_words(const KBEngine *engine);
+// JSON array of {"from", "to", "count"}: words the user keeps changing into
+// others. Release with kb_string_free.
+char *kb_learned_fixes(const KBEngine *engine);
 
 // Learned words as text for persistence; release with kb_string_free.
 char *kb_export(const KBEngine *engine);

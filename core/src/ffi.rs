@@ -172,6 +172,68 @@ pub unsafe extern "C" fn kb_learn_word(engine: *mut Engine, word: *const c_char)
 }
 
 /// # Safety
+/// `engine` must be valid; strings must be null or NUL-terminated UTF-8.
+#[no_mangle]
+pub unsafe extern "C" fn kb_learn_fix(engine: *mut Engine, from: *const c_char, to: *const c_char) {
+    if let (Some(engine), Some(from), Some(to)) = (engine.as_mut(), text(from), text(to)) {
+        engine.learn_fix(&from, &to);
+    }
+}
+
+/// # Safety
+/// `engine` must be valid; strings must be null or NUL-terminated UTF-8.
+#[no_mangle]
+pub unsafe extern "C" fn kb_forget_fix(engine: *mut Engine, from: *const c_char, to: *const c_char) {
+    if let (Some(engine), Some(from), Some(to)) = (engine.as_mut(), text(from), text(to)) {
+        engine.forget_fix(&from, &to);
+    }
+}
+
+/// # Safety
+/// `engine` must be valid; `word` must be null or NUL-terminated UTF-8.
+#[no_mangle]
+pub unsafe extern "C" fn kb_preferred(engine: *const Engine, word: *const c_char) -> *mut c_char {
+    let Some(engine) = engine.as_ref() else { return std::ptr::null_mut() };
+    into_c(encode_words(&engine.preferred(&text(word).unwrap_or_default())))
+}
+
+/// # Safety
+/// `engine` must be valid; `word` must be null or NUL-terminated UTF-8.
+#[no_mangle]
+pub unsafe extern "C" fn kb_forget(engine: *mut Engine, word: *const c_char) {
+    if let (Some(engine), Some(word)) = (engine.as_mut(), text(word)) {
+        engine.forget(&word);
+    }
+}
+
+/// # Safety
+/// `engine` must be valid.
+#[no_mangle]
+pub unsafe extern "C" fn kb_learned_words(engine: *const Engine) -> *mut c_char {
+    engine.as_ref().map_or(std::ptr::null_mut(), |engine| into_c(encode_words(&engine.learned_words())))
+}
+
+/// # Safety
+/// `engine` must be valid.
+#[no_mangle]
+pub unsafe extern "C" fn kb_learned_fixes(engine: *const Engine) -> *mut c_char {
+    let Some(engine) = engine.as_ref() else { return std::ptr::null_mut() };
+    let mut s = String::from("[");
+    for (i, fix) in engine.learned_fixes().iter().enumerate() {
+        if i > 0 {
+            s.push(',');
+        }
+        s.push_str("{\"from\":");
+        json::push_str(&mut s, &fix.from);
+        s.push_str(",\"to\":");
+        json::push_str(&mut s, &fix.to);
+        s.push_str(&format!(",\"count\":{}}}", fix.count));
+    }
+    s.push(']');
+    into_c(s)
+}
+
+/// # Safety
 /// `engine` must be valid.
 #[no_mangle]
 pub unsafe extern "C" fn kb_export(engine: *const Engine) -> *mut c_char {

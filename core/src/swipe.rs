@@ -380,6 +380,23 @@ mod tests {
     }
 
     #[test]
+    fn swipes_lean_towards_words_the_user_changes_them_to() {
+        let mut engine = Engine::new();
+        let path = trace("put", 0.0);
+        let before = engine.swipe("", &path, 8);
+        assert_eq!(before[0], "put");
+        assert!(before.contains(&"pit".to_string()), "{before:?}");
+        engine.learn_fix("put", "pit");
+        engine.learn_fix("put", "pit");
+        assert_eq!(engine.swipe("", &path, 8)[0], "pit");
+        // After the third time, "put" no longer contends.
+        engine.learn_fix("put", "pit");
+        let readings = engine.swipe_readings("", &path, 8);
+        assert_eq!(readings[0].word, "pit");
+        assert!(readings[..contenders(&readings)].iter().all(|r| r.word != "put"), "{readings:?}");
+    }
+
+    #[test]
     fn swiped_contractions_get_their_apostrophe() {
         let engine = Engine::new();
         assert_eq!(engine.swipe("", &trace("im", 0.0), 1), ["I'm"]);
