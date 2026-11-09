@@ -8,7 +8,7 @@ const MAX_LEN: usize = 32;
 
 const SUBSTITUTE: f32 = 1.0;
 const SUBSTITUTE_NEIGHBOUR: f32 = 0.7;
-const FIRST_LETTER_PENALTY: f32 = 0.4;
+pub const FIRST_LETTER_PENALTY: f32 = 0.4;
 const INSERT_OR_DELETE: f32 = 1.0;
 const DOUBLED_LETTER: f32 = 0.6;
 const TRANSPOSE: f32 = 0.4;

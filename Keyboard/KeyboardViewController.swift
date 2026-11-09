@@ -435,11 +435,14 @@ final class KeyboardViewController: UIInputViewController {
             self.selection?.options = engine.replacements(for: word, from: preferred + options + near, limit: Self.selectionOptions)
             self.render()
 
-            // Give one slot to whichever near-miss fits the sentence best.
+            // Lead with whichever near-miss fits the sentence best. Picking
+            // from a list is far more reliable than the open-ended fill, which
+            // stumbles on small words ("This ____ a test" gets nouns, not "is").
             let pick = near.count > 1 ? await predictor.choose(from: near, after: before, before: after) : near.first
             guard !Task.isCancelled, self.selection?.word == word else { return }
-            if let pick, !options.prefix(2).contains(pick) {
-                options.insert(pick, at: min(1, options.count))
+            if let pick {
+                options.removeAll { $0 == pick }
+                options.insert(pick, at: 0)
                 self.selection?.fromAI.insert(pick.lowercased())
             }
             self.selection?.options = engine.replacements(for: word, from: preferred + options + near, limit: Self.selectionOptions)

@@ -3,7 +3,7 @@
 
 use crate::context::{self, is_apostrophe, Context};
 use crate::dict::Dict;
-use crate::distance::{adjacent, typo_cost};
+use crate::distance::{adjacent, typo_cost, FIRST_LETTER_PENALTY};
 use crate::swipe::{Reading, Through};
 use std::collections::HashMap;
 
@@ -458,7 +458,9 @@ impl Engine {
             return Vec::new();
         }
         let bytes = lower.as_bytes();
-        let max = max_cost(bytes.len());
+        // A word picked out as wrong is worth a longer reach than autocorrect
+        // takes: "his" for "is" or "this" gets the first letter wrong.
+        let max = max_cost(bytes.len()) + FIRST_LETTER_PENALTY;
         let mut near: Vec<(f32, &str)> = self
             .dict
             .entries
@@ -1152,6 +1154,7 @@ mod tests {
         // A name's capital is its own, not the sentence's.
         assert_eq!(e.replacements("Di", &["do", "London"], 3), ["do", "London"]);
         assert!(e.neighbours("Di", 6).contains(&"do".to_string()), "{:?}", e.neighbours("Di", 6));
+        assert!(e.neighbours("his", 6).contains(&"is".to_string()), "{:?}", e.neighbours("his", 6));
     }
 
     #[test]
@@ -1208,14 +1211,5 @@ mod tests {
         assert!(auto(&e.suggest("helo", None, 3)).is_some());
         e.learn_word("helo");
         assert_eq!(auto(&e.suggest("helo", None, 3)), None);
-    }
-}
-
-#[cfg(test)]
-mod probe_tmp {
-    #[test]
-    fn probe_his() {
-        let e = super::Engine::new();
-        eprintln!("NEIGHBOURS {:?}", e.neighbours("his", 6));
     }
 }
