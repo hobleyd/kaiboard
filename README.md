@@ -18,6 +18,9 @@ last few letters.
   typed them twice, and a word you keep changing into another is offered, then
   applied, in its place. *Review Dictionary* in the app lists both so you can
   delete any.
+- **Fits the field.** Digit pads for numbers and codes, @ beside the space bar
+  in e-mail fields and / in web addresses, a passwords key in sign-in fields,
+  and passwords, codes and addresses typed literally and never learned.
 - **Private.** Nothing leaves the phone. See [Full Access](#full-access) for
   the one thing the keyboard asks it for.
 
@@ -35,8 +38,11 @@ see.
 Nothing else in the keyboard needs Full Access. It makes no network requests,
 doesn't read or write the pasteboard, and uses no other service that Full
 Access unlocks. Suggestions, swipe typing, Apple Intelligence and emoji all
-work the same without it. The only place the keyboard checks `hasFullAccess`
-is where it decides which container to keep learned words in.
+work the same without it. The keyboard checks `hasFullAccess` only to decide
+which container to keep learned words in, and to leave a marker file there
+that tells the app it has Full Access. The app can't ask iOS that itself, so
+until the marker appears it offers to open its Settings page, where
+Keyboards → kAIboard → Allow Full Access turns it on.
 
 Leave Full Access off and the keyboard keeps learning, but stores the words
 privately, so *Review Dictionary* in the app stays empty. The first time it
