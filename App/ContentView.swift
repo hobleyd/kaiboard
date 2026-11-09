@@ -45,10 +45,11 @@ struct ContentView: View {
                     Section {
                         Label("In Settings → kAIboard → Keyboards → kAIboard, turn on Allow Full Access", systemImage: "lock.open")
                         Button("Open kAIboard Settings", action: openSettings)
+                        Button("Already On? Try It Here", action: tryItHere)
                     } header: {
                         Text("Allow Full Access")
                     } footer: {
-                        Text("Full Access lets kAIboard share the words it learns with this app, so you can review them. Once it's on, use kAIboard once, here or anywhere, and this goes away.")
+                        Text("Full Access lets kAIboard share the words it learns with this app, so you can review them. Once it's on, use kAIboard once, here or in any app, and this goes away.")
                     }
                 }
 
@@ -109,13 +110,28 @@ struct ContentView: View {
             // after allowing Full Access is enough to notice.
             .onReceive(NotificationCenter.default.publisher(for: UIResponder.keyboardDidShowNotification)) { _ in
                 fullAccess = TextEngine.Store.hasFullAccess
+                // The keyboard runs in its own process, so give it a moment in case it's behind.
+                Task {
+                    try? await Task.sleep(for: .seconds(1))
+                    fullAccess = TextEngine.Store.hasFullAccess
+                }
             }
             .alert("Allow Full Access", isPresented: $askingForFullAccess) {
                 Button("Open Settings", action: openSettings)
+                Button("Try It Here", action: tryItHere)
                 Button("Not Now", role: .cancel) {}
             } message: {
-                Text("kAIboard needs Full Access to share the words it learns with this app. In Settings, tap Keyboards → kAIboard and turn on Allow Full Access. If kAIboard isn't listed there yet, add it first under General → Keyboard → Keyboards.")
+                Text("kAIboard needs Full Access to share the words it learns with this app. In Settings, tap Keyboards → kAIboard and turn on Allow Full Access. If kAIboard isn't listed there yet, add it first under General → Keyboard → Keyboards.\n\nAlready turned it on? Tap Try It Here and bring up kAIboard so this app can tell.")
             }
+        }
+    }
+
+    /// Brings up the keyboard here, so kAIboard leaves its marker if it has Full Access.
+    private func tryItHere() {
+        // Focusing straight from an alert button is lost as the alert goes away.
+        Task {
+            try? await Task.sleep(for: .milliseconds(400))
+            typing = true
         }
     }
 
