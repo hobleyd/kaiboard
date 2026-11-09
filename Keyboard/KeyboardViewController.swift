@@ -170,6 +170,9 @@ final class KeyboardViewController: UIInputViewController {
         if hasFullAccess {
             suggester.engine.applyForgetting()
             suggester.invalidate()
+            if let marker = TextEngine.Store.fullAccess, !TextEngine.Store.hasFullAccess {
+                FileManager.default.createFile(atPath: marker.path, contents: nil)
+            }
         }
         suggester.predictor.prewarm()
         keys.showsGlobe = needsInputModeSwitchKey

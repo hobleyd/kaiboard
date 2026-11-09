@@ -172,6 +172,18 @@ final class TextEngine {
             FileManager.default.containerURL(forSecurityApplicationGroupIdentifier: group)?
                 .appendingPathComponent("forgotten.tsv")
         }
+
+        /// Left by the keyboard whenever it opens with Full Access, so the app,
+        /// which can't ask, knows it has been allowed. It can't be removed when
+        /// Full Access is taken away again, since that also takes the container.
+        static var fullAccess: URL? {
+            FileManager.default.containerURL(forSecurityApplicationGroupIdentifier: group)?
+                .appendingPathComponent("full-access")
+        }
+
+        static var hasFullAccess: Bool {
+            fullAccess.map { FileManager.default.fileExists(atPath: $0.path) } ?? false
+        }
     }
 
     func load(from url: URL?) {

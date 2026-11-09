@@ -27,6 +27,9 @@ final class Playground {
 struct ContentView: View {
     @State private var playground = Playground()
     @FocusState private var typing: Bool
+    @Environment(\.scenePhase) private var scenePhase
+    @State private var fullAccess = TextEngine.Store.hasFullAccess
+    @State private var askingForFullAccess = false
 
     var body: some View {
         NavigationStack {
@@ -35,10 +38,17 @@ struct ContentView: View {
                     Label("Open Settings → General → Keyboard → Keyboards", systemImage: "1.circle")
                     Label("Tap Add New Keyboard… and choose kAIboard", systemImage: "2.circle")
                     Label("In any app, hold the globe key and pick kAIboard", systemImage: "3.circle")
-                    Button("Open Settings") {
-                        if let url = URL(string: UIApplication.openSettingsURLString) {
-                            UIApplication.shared.open(url)
-                        }
+                    Button("Open Settings", action: openSettings)
+                }
+
+                if !fullAccess {
+                    Section {
+                        Label("In Settings → kAIboard → Keyboards → kAIboard, turn on Allow Full Access", systemImage: "lock.open")
+                        Button("Open kAIboard Settings", action: openSettings)
+                    } header: {
+                        Text("Allow Full Access")
+                    } footer: {
+                        Text("Full Access lets kAIboard share the words it learns with this app, so you can review them. Once it's on, use kAIboard once, here or anywhere, and this goes away.")
                     }
                 }
 
@@ -89,7 +99,29 @@ struct ContentView: View {
             .onAppear {
                 // Lets a scripted launch bring the keyboard straight up.
                 typing = CommandLine.arguments.contains("--type")
+                let scripted = ["--type", "--selftest", "--ask"].contains { CommandLine.arguments.contains($0) }
+                askingForFullAccess = !fullAccess && !scripted
             }
+            .onChange(of: scenePhase) { _, phase in
+                if phase == .active { fullAccess = TextEngine.Store.hasFullAccess }
+            }
+            // The keyboard leaves its marker as it comes up, so trying it here
+            // after allowing Full Access is enough to notice.
+            .onReceive(NotificationCenter.default.publisher(for: UIResponder.keyboardDidShowNotification)) { _ in
+                fullAccess = TextEngine.Store.hasFullAccess
+            }
+            .alert("Allow Full Access", isPresented: $askingForFullAccess) {
+                Button("Open Settings", action: openSettings)
+                Button("Not Now", role: .cancel) {}
+            } message: {
+                Text("kAIboard needs Full Access to share the words it learns with this app. In Settings, tap Keyboards → kAIboard and turn on Allow Full Access. If kAIboard isn't listed there yet, add it first under General → Keyboard → Keyboards.")
+            }
+        }
+    }
+
+    private func openSettings() {
+        if let url = URL(string: UIApplication.openSettingsURLString) {
+            UIApplication.shared.open(url)
         }
     }
 }
